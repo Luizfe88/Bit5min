@@ -100,10 +100,27 @@ def discover_markets(api_key, min_window=None, max_window=None):
             
             # Filtro principal
             if min_window <= seconds_remaining <= max_window:
-                # 3. Filtro de Liquidez/Spread (Opcional, se dados disponíveis)
-                # spread = m.get("spread", 0)
-                # liquidity = m.get("liquidity", 0)
-                # if spread > config.MARKET_FILTER["max_spread_percent"]: continue
+                # 3. Filtro de Liquidez/Spread (v3)
+                # O arena.py e bots devem ter acesso a esses dados, mas setup.py roda isolado as vezes.
+                # Se 'liquidity' ou 'spread' não estiverem no objeto 'm', não podemos filtrar aqui.
+                # Mas assumindo que a API retorna 'liquidity' e podemos calcular spread.
+                
+                liquidity = float(m.get("liquidity") or 0)
+                if liquidity < config.MARKET_FILTER["min_liquidity_usd"]:
+                     # print(f"Skipping {mid}: Low liquidity ${liquidity:.0f}")
+                     continue
+                     
+                # Spread check (se bid/ask disponíveis)
+                # A API retorna best_bid e best_ask?
+                # Se não, o bot faz o check. Mas vamos tentar filtrar o grosso aqui.
+                # best_bid = m.get("best_bid")
+                # best_ask = m.get("best_ask")
+                # if best_bid and best_ask:
+                #     mid_price = (best_bid + best_ask) / 2
+                #     if mid_price > 0:
+                #         spread_pct = (best_ask - best_bid) / mid_price * 100
+                #         if spread_pct > config.MARKET_FILTER["max_spread_percent"]:
+                #             continue
                 
                 m["seconds_remaining"] = seconds_remaining
                 valid_markets.append(m)

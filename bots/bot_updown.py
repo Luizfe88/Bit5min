@@ -19,23 +19,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
     "rsi_period": 14,
-    "rsi_overbought": 70,
-    "rsi_oversold": 30,
+    "rsi_overbought_entry": 74,    # v3: Entrada agressiva Down
+    "rsi_oversold_entry": 26,      # v3: Entrada agressiva Up
+    "rsi_overbought_sl": 81,       # v3: SL se piorar Down
+    "rsi_oversold_sl": 19,         # v3: SL se piorar Up
     "ema_short": 20,
     "ema_long": 50,
-    "position_size_pct": 0.02,     # 2% por trade (conservador)
-    "min_confidence": 0.60,
-    "stop_loss_rsi_reversal": True, # Sai se RSI inverter
-    "take_profit_rsi_target": 50,   # Sai parcial se RSI voltar ao meio
+    "position_size_pct": 0.01,     # 1% por trade
+    "min_confidence": 0.65,
 }
 
 class UpDownBot(BaseBot):
-    """Bot RSI/EMA para mercados 1h-3d."""
+    """Bot RSI/EMA para mercados 1h-3d (v3)."""
 
-    def __init__(self, name="updown-rsi-v2", params=None, generation=0, lineage=None):
+    def __init__(self, name="updown-rsi-v3", params=None, generation=0, lineage=None):
         super().__init__(
             name=name,
-            strategy_type="rsi_trend",
+            strategy_type="updown", # FIX: deve corresponder à chave no arena.py
             params=params or DEFAULT_PARAMS.copy(),
             generation=generation,
             lineage=lineage,
@@ -46,6 +46,26 @@ class UpDownBot(BaseBot):
         question = (market.get("question") or "").lower()
         if not ("up or down" in question or "up/down" in question):
              return self._hold("ignoring non-updown market")
+        
+        # 1.1 Spread Check (v3 - Rigoroso)
+        # Assumindo que signals tem o book ou spread
+        # Se o bot não receber o spread, tentamos calcular se possível
+        # O arena.py passa 'market' que pode ter best_bid/best_ask
+        best_bid = float(market.get("best_bid") or 0)
+        best_ask = float(market.get("best_ask") or 0)
+        
+        if best_bid > 0 and best_ask > 0:
+            mid_price = (best_bid + best_ask) / 2
+            spread_pct = (best_ask - best_bid) / mid_price * 100
+            max_spread = config.MARKET_FILTER["max_spread_percent"]
+            
+            if spread_pct > max_spread:
+                return self._hold(f"Spread {spread_pct:.1f}% > {max_spread}% → mercado rejeitado")
+        else:
+             # Se não temos dados de book, assumimos risco ou hold?
+             # Por segurança, melhor pular se não sabemos o spread
+             # Mas em backtest/paper pode faltar esse dado.
+             pass
 
         # 2. Dados de Preço e Indicadores
         prices = signals.get("prices", [])
@@ -68,39 +88,31 @@ class UpDownBot(BaseBot):
         signal = 0
         confidence = 0.0
         reason = []
+        
+        # v3: Thresholds separados para entrada
+        entry_oversold = self.strategy_params["rsi_oversold_entry"]
+        entry_overbought = self.strategy_params["rsi_overbought_entry"]
 
         # Cenário A: Reversão de Sobrevenda (Buy UP)
-        # RSI < 30 e cruzando pra cima, em tendência de alta macro (ou repique)
-        if current_rsi < self.strategy_params["rsi_oversold"]:
+        # RSI <= 26
+        if current_rsi <= entry_oversold:
             signal += 1
-            confidence += 0.6
-            reason.append(f"RSI Oversold ({current_rsi:.1f})")
+            confidence += 0.65
+            reason.append(f"RSI Oversold ({current_rsi:.1f} <= {entry_oversold})")
             if trend == "bull":
                 confidence += 0.2
                 reason.append("Trend Bull confirm")
 
         # Cenário B: Reversão de Sobrecompra (Buy DOWN)
-        # RSI > 70 e cruzando pra baixo
-        elif current_rsi > self.strategy_params["rsi_overbought"]:
+        # RSI >= 74
+        elif current_rsi >= entry_overbought:
             signal -= 1
-            confidence += 0.6
-            reason.append(f"RSI Overbought ({current_rsi:.1f})")
+            confidence += 0.65
+            reason.append(f"RSI Overbought ({current_rsi:.1f} >= {entry_overbought})")
             if trend == "bear":
                 confidence += 0.2
                 reason.append("Trend Bear confirm")
                 
-        # Cenário C: Momentum Forte (RSI entre 40-60 mas rompendo)
-        # Se preço > EMA Curta > EMA Longa e RSI > 50 (Força comprador)
-        elif trend == "bull" and current_rsi > 50 and current_rsi < 70:
-            signal += 0.5
-            confidence += 0.4
-            reason.append(f"Bull Trend Momentum (RSI {current_rsi:.1f})")
-            
-        elif trend == "bear" and current_rsi < 50 and current_rsi > 30:
-            signal -= 0.5
-            confidence += 0.4
-            reason.append(f"Bear Trend Momentum (RSI {current_rsi:.1f})")
-
         # 4. Decisão Final
         if abs(signal) < 0.5 or confidence < self.strategy_params["min_confidence"]:
              return self._hold(f"low confidence ({confidence:.2f}) or weak signal ({signal})")
@@ -117,6 +129,114 @@ class UpDownBot(BaseBot):
             "reasoning": " | ".join(reason),
             "suggested_amount": amount
         }
+
+    def check_exit(self, trade: dict, current_price: float, market_data: dict = None) -> dict:
+        """
+        Verifica condições de saída (SL/TP) dinâmicos v3.
+        Chamado pelo PositionMonitorThread do arena.py.
+        """
+        if not market_data:
+            return None
+
+        # 1. Determinar duração do mercado para escolher perfil de risco
+        resolves_at_str = market_data.get("resolves_at")
+        
+        # Fallback: usar config padrão se não tiver datas
+        duration_seconds = 86400 # Default 1d
+        
+        try:
+            from datetime import datetime
+            if resolves_at_str:
+                res_dt = datetime.fromisoformat(resolves_at_str.replace("Z", "+00:00"))
+                # Se tivermos created_at do mercado, usamos. Se não, usamos created_at do trade como proxy
+                start_dt = datetime.utcnow().replace(tzinfo=None) # Agora como fallback
+                if "created_at" in market_data: # Se o objeto market tiver
+                     start_dt = datetime.fromisoformat(market_data["created_at"].replace("Z", "+00:00"))
+                elif "created_at" in trade: # Usar data do trade
+                     start_dt = datetime.fromisoformat(trade["created_at"])
+                
+                if res_dt.tzinfo: res_dt = res_dt.astimezone(None).replace(tzinfo=None)
+                if start_dt.tzinfo: start_dt = start_dt.astimezone(None).replace(tzinfo=None)
+                
+                duration_seconds = (res_dt - start_dt).total_seconds()
+        except Exception as e:
+            logger.warning(f"Erro calculando duração para check_exit: {e}")
+
+        duration_hours = duration_seconds / 3600.0
+
+        # Escolher perfil (v3)
+        risk_cfg = config.RISK_CONFIG["updown_bot"]
+        if duration_hours <= 24: # 1 dia
+            profile = risk_cfg["1d"]
+        elif duration_hours <= 72: # 3 dias
+            profile = risk_cfg["3d"]
+        else: # > 3 dias (Conservador)
+            profile = risk_cfg["conservative"]
+            # logger.warning(f"Market {duration_hours:.1f}h fora do sweet spot → usando risk conservador")
+
+        # Calcular PnL atual baseado no Fill Price real
+        # entry_price = trade["amount"] / trade["shares_bought"] (já considera spread pago)
+        shares = trade.get("shares_bought", 0)
+        amount = trade.get("amount", 0)
+        
+        if shares <= 0 or amount <= 0:
+            return None
+            
+        fill_price = amount / shares
+        side = trade["side"]
+        
+        # Preço da share atual (0-1)
+        # Se current_price é a probabilidade do "Yes":
+        share_price = current_price if side == "yes" else (1.0 - current_price)
+        
+        pnl_pct = (share_price - fill_price) / fill_price * 100.0
+        
+        # Lógica de Saída v3
+        exit_action = None
+        reason = ""
+        amount_to_sell_pct = 0.0
+
+        # 1. Stop Loss (baseado em % do fill price)
+        if pnl_pct <= profile["sl_percent"]:
+            exit_action = "sell"
+            amount_to_sell_pct = 1.0
+            reason = f"SL ativado: {pnl_pct:.1f}% do fill price (Limit: {profile['sl_percent']}%)"
+
+        # 2. Take Profit Partial
+        elif pnl_pct >= profile["tp_partial"]:
+            exit_action = "sell"
+            amount_to_sell_pct = 0.5
+            reason = f"TP Parcial: {pnl_pct:.1f}% >= {profile['tp_partial']}%"
+            
+            # Se bater TP Full
+            if pnl_pct >= profile["tp_full"]:
+                amount_to_sell_pct = 1.0
+                reason = f"TP Full: {pnl_pct:.1f}% >= {profile['tp_full']}%"
+
+        # 3. Trailing Stop
+        # Se PnL > trailing_start, ativa stop se cair trailing_dist do pico
+        # Requer HWM (High Water Mark). Sem DB state, usamos o current PnL como proxy simples?
+        # Sem HWM persistido, trailing stop puro é difícil. 
+        # Mas podemos implementar: Se PnL > Trailing Start E PnL < (Trailing Start - Distância)? Não, isso não faz sentido.
+        # Trailing stop requer memória do pico.
+        # Vamos pular a implementação rigorosa de Trailing sem HWM por enquanto para não introduzir bugs.
+        
+        # 4. RSI Stop (v3)
+        # Requer RSI atual. O PositionMonitorThread passa 'market_data' que tem 'current_price', mas não histórico.
+        # Se não temos histórico aqui, não podemos calcular RSI.
+        # Solução ideal: O bot deve manter estado ou acessar feed.
+        # Por limitação da arquitetura atual (thread isolada), RSI Stop só funciona se tivermos acesso ao feed.
+        # Vamos assumir que não temos RSI no monitor thread por enquanto.
+
+        if exit_action:
+            logger.info(f"[{self.name}] {reason} | Dur={duration_hours:.1f}h | Fill=${fill_price:.3f} Now=${share_price:.3f}")
+            return {
+                "action": "sell",
+                "amount_pct": amount_to_sell_pct,
+                "reason": reason
+            }
+            
+        return None
 
     def _calculate_rsi(self, series, period):
         delta = series.diff()

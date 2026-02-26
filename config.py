@@ -126,8 +126,8 @@ MARKET_FILTER = {
     "preferred_window": "1h-3d",
     "allow_fallback": True,
     "fallback_min_seconds": _env_int("BOT_ARENA_FALLBACK_MIN_SECONDS", 1800),    # 30 min fallback
-    "min_liquidity_usd": _env_float("BOT_ARENA_MIN_LIQUIDITY_USD", 5000.0),
-    "max_spread_percent": _env_float("BOT_ARENA_MAX_SPREAD_PERCENT", 3.0),
+    "min_liquidity_usd": _env_float("BOT_ARENA_MIN_LIQUIDITY_USD", 8000.0),      # v3: 8000
+    "max_spread_percent": _env_float("BOT_ARENA_MAX_SPREAD_PERCENT", 6.0),       # v3: 6.0% (Rejeita > 6%)
 }
 
 # Legacy variables kept for compatibility but redirected to new filter logic where possible
@@ -137,6 +137,39 @@ TRADE_MAX_TTE_SECONDS = MARKET_FILTER["max_window_seconds"]
 # Risk Management - Position Sizing
 POSITION_SIZE_PCT = _env_float("BOT_ARENA_POSITION_SIZE_PCT", 0.01) # 1.0% default
 MAX_OPEN_TRADES = _env_int("BOT_ARENA_MAX_OPEN_TRADES", 6)
+
+# Risk Config for Specific Bots (UpDown v3)
+RISK_CONFIG = {
+    "updown_bot": {
+        # Configuração para mercados <= 1 dia (24h)
+        "1d": {
+            "sl_percent": -48.0,      # Com buffer de spread ~8%
+            "tp_partial": 65.0,       # Vende 50%
+            "tp_full": 88.0,          # Vende 100%
+            "trailing_start": 70.0,   # Começa a trail após +70%
+            "trailing_dist": 12.0,    # Distância de 12%
+            "monitor_interval": 300,  # 5 min
+        },
+        # Configuração para mercados <= 3 dias (72h)
+        "3d": {
+            "sl_percent": -52.0,
+            "tp_partial": 58.0,
+            "tp_full": 82.0,
+            "trailing_start": 65.0,
+            "trailing_dist": 12.0,
+            "monitor_interval": 900,  # 15 min
+        },
+        # Configuração Conservadora (> 3 dias)
+        "conservative": {
+            "sl_percent": -60.0,
+            "tp_partial": 50.0,
+            "tp_full": 75.0,
+            "trailing_start": 60.0,
+            "trailing_dist": 15.0,
+            "monitor_interval": 1800, # 30 min
+        }
+    }
+}
 
 # Online edge model
 MODEL_LR = 0.05

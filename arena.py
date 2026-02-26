@@ -87,7 +87,7 @@ def create_default_bots():
         MeanRevBot(name="meanrev-v1", generation=0),
         MeanRevSLBot(name="meanrev-sl-v1", generation=0),
         OrderflowBot(name="orderflow-v1", generation=0),
-        UpDownBot(name="updown-v1", generation=0),
+        UpDownBot(name="updown-rsi-v3", generation=0), # v3 RSI strategy
     ]
 
 
@@ -837,7 +837,8 @@ class PositionMonitorThread(threading.Thread):
     def update_bots(self, bots):
         """Update the bot roster (called from main thread after evolution)."""
         with self._lock:
-            self._bots = {b.name: b for b in bots if b.exit_strategy}
+            # Monitor bots that have static exit_strategy OR dynamic check_exit method
+            self._bots = {b.name: b for b in bots if b.exit_strategy or hasattr(b, 'check_exit')}
 
     def stop(self):
         self._stop_event.set()
@@ -857,15 +858,16 @@ class PositionMonitorThread(threading.Thread):
                 return {}
             data = resp.json()
             markets_list = data if isinstance(data, list) else data.get("markets", [])
+            # Return full market object keyed by ID
             return {
-                (m.get("id") or m.get("market_id")): m.get("current_price")
+                (m.get("id") or m.get("market_id")): m
                 for m in markets_list
                 if m.get("current_price") is not None
             }
         except Exception:
             return {}
 
-    def _check_positions(self, price_map):
+    def _check_positions(self, market_map):
         """Check all open positions for SL/TP exits."""
         with self._lock:
             exit_bots = dict(self._bots)
@@ -877,7 +879,7 @@ class PositionMonitorThread(threading.Thread):
         bot_names = list(exit_bots.keys())
         with db.get_conn() as conn:
             rows = conn.execute(
-                "SELECT id, bot_name, market_id, side, amount, shares_bought, trade_features, reasoning "
+                "SELECT id, bot_name, market_id, side, amount, shares_bought, trade_features, reasoning, created_at "
                 "FROM trades WHERE outcome IS NULL AND bot_name IN ({})".format(
                     ",".join("?" for _ in bot_names)
                 ),
@@ -887,9 +889,15 @@ class PositionMonitorThread(threading.Thread):
         if not rows:
             return
 
-        for trade in rows:
+        for trade_row in rows:
+            trade = dict(trade_row) # Convert to dict for mutability/passing
             market_id = trade["market_id"]
-            current_yes_price = price_map.get(market_id)
+            market_data = market_map.get(market_id)
+            
+            if not market_data:
+                continue
+                
+            current_yes_price = market_data.get("current_price")
             if current_yes_price is None:
                 continue
 
@@ -919,7 +927,8 @@ class PositionMonitorThread(threading.Thread):
 
             exit_reason = None
             exit_pnl = None
-
+            
+            # --- 1. Static SL/TP (Legacy) ---
             if bot.exit_strategy == "stop_loss" and pnl_pct <= -bot.stop_loss_pct:
                 exit_pnl = (current_share_price - entry_price) * shares
                 exit_reason = f"exit_sl ({pnl_pct:+.1%})"
@@ -927,9 +936,30 @@ class PositionMonitorThread(threading.Thread):
             if bot.exit_strategy == "take_profit" and pnl_pct >= bot.take_profit_pct:
                 exit_pnl = (current_share_price - entry_price) * shares
                 exit_reason = f"exit_tp ({pnl_pct:+.1%})"
+            
+            # --- 2. Dynamic Exit (Advanced) ---
+            if not exit_reason and hasattr(bot, 'check_exit'):
+                # Pass full trade dict (with created_at) and market data (with resolves_at)
+                try:
+                    exit_signal = bot.check_exit(trade, current_yes_price, market_data)
+                    if exit_signal and exit_signal.get("action") == "sell":
+                        reason = exit_signal.get("reason", "dynamic_exit")
+                        amount_pct = exit_signal.get("amount_pct", 1.0)
+                        
+                        if amount_pct >= 0.99: # Full Exit
+                            exit_pnl = (current_share_price - entry_price) * shares
+                            exit_reason = f"dynamic_{reason}"
+                        else:
+                            # Partial Exit (Log Only for now as DB doesn't support split)
+                            # Update reasoning to record the event
+                            logger.info(f"[{trade['bot_name']}] PARTIAL EXIT SIGNAL: {reason} (Selling {amount_pct:.0%}). "
+                                        f"Not executing in DB (Partial not supported). PnL: {pnl_pct:+.1f}%")
+                            # TODO: Implement partial close in DB
+                except Exception as e:
+                    logger.error(f"Error in dynamic check_exit for {bot.name}: {e}")
 
             if exit_reason and exit_pnl is not None:
-                outcome = "exit_tp" if "tp" in exit_reason else "exit_sl"
+                outcome = "exit_tp" if "tp" in exit_reason or "TP" in exit_reason else "exit_sl"
                 db.resolve_trade(trade["id"], outcome, exit_pnl)
                 logger.info(
                     f"[{trade['bot_name']}] EARLY EXIT: {exit_reason} on {market_id[:12]}... "
