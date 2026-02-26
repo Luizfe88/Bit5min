@@ -39,11 +39,18 @@ class OrderflowBot(BaseBot):
     - Mudanças no fluxo de ordens
     """
     
-    def __init__(self, name: str, params: Dict[str, Any] = None, generation: int = 0):
-        super().__init__(name, params, generation)
+    def __init__(self, name: str, params: Dict[str, Any] = None, generation: int = 0, lineage: str = None):
+        merged_params = {**DEFAULT_PARAMS, **(params or {})}
+        super().__init__(
+            name=name,
+            strategy_type="orderflow",
+            params=merged_params,
+            generation=generation,
+            lineage=lineage
+        )
         
         # Parâmetros padrão
-        self.params = {**DEFAULT_PARAMS, **(params or {})}
+        self.params = merged_params
         
         # Cache de dados de fluxo
         self.flow_cache = {}
