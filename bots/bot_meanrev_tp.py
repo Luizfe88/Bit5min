@@ -37,6 +37,14 @@ class MeanRevTPBot(MeanRevBot):
 
         if decision.get("action") == "buy":
             decision["reasoning"] += " [TP: monitoring for 2x exit @0.5s]"
+            
+            # Add risk info to features for dashboard display
+            if "features" not in decision: decision["features"] = {}
+            decision["features"].update({
+                "risk_profile": "TP 2x (Fixed)",
+                "tp_percent": self.take_profit_pct * 100.0
+            })
+            
             return decision
 
         # Override skips — this bot always enters a position

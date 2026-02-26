@@ -41,6 +41,44 @@ class UpDownBot(BaseBot):
             lineage=lineage,
         )
 
+    def _get_risk_profile(self, market_data: dict) -> tuple:
+        """Determina o perfil de risco baseado na duração do mercado.
+        Retorna (nome_perfil, dict_perfil)"""
+        if not market_data:
+            return "1d", config.RISK_CONFIG["updown_bot"]["1d"]
+
+        resolves_at_str = market_data.get("resolves_at")
+        
+        # Fallback: usar config padrão se não tiver datas
+        duration_seconds = 86400 # Default 1d
+        
+        try:
+            from datetime import datetime
+            if resolves_at_str:
+                res_dt = datetime.fromisoformat(resolves_at_str.replace("Z", "+00:00"))
+                # Se tivermos created_at do mercado, usamos. Se não, usamos created_at do trade como proxy
+                start_dt = datetime.utcnow().replace(tzinfo=None) # Agora como fallback
+                if "created_at" in market_data: # Se o objeto market tiver
+                     start_dt = datetime.fromisoformat(market_data["created_at"].replace("Z", "+00:00"))
+                
+                if res_dt.tzinfo: res_dt = res_dt.astimezone(None).replace(tzinfo=None)
+                if start_dt.tzinfo: start_dt = start_dt.astimezone(None).replace(tzinfo=None)
+                
+                duration_seconds = (res_dt - start_dt).total_seconds()
+        except Exception as e:
+            logger.warning(f"Erro calculando duração para risk profile: {e}")
+
+        duration_hours = duration_seconds / 3600.0
+
+        # Escolher perfil (v3)
+        risk_cfg = config.RISK_CONFIG["updown_bot"]
+        if duration_hours <= 24: # 1 dia
+            return "1d", risk_cfg["1d"]
+        elif duration_hours <= 72: # 3 dias
+            return "3d", risk_cfg["3d"]
+        else: # > 3 dias (Conservador)
+            return "conservative", risk_cfg["conservative"]
+
     def analyze(self, market: dict, signals: dict, kelly_fraction=None) -> dict:
         # 1. Filtro de Mercado (Validar se é Up/Down Crypto)
         question = (market.get("question") or "").lower()
@@ -122,12 +160,20 @@ class UpDownBot(BaseBot):
         # Sizing
         amount = config.PAPER_STARTING_BALANCE * self.strategy_params["position_size_pct"]
         
+        # Determinar perfil de risco para salvar no trade
+        profile_name, profile_data = self._get_risk_profile(market)
+        
         return {
             "action": "buy",
             "side": side,
             "confidence": min(confidence, 0.95),
             "reasoning": " | ".join(reason),
-            "suggested_amount": amount
+            "suggested_amount": amount,
+            "trade_features": {
+                "risk_profile": profile_name,
+                "sl_percent": profile_data["sl_percent"],
+                "tp_percent": profile_data["tp_full"]
+            }
         }
 
     def check_exit(self, trade: dict, current_price: float, market_data: dict = None) -> dict:
@@ -138,46 +184,16 @@ class UpDownBot(BaseBot):
         if not market_data:
             return None
 
-        # 1. Determinar duração do mercado para escolher perfil de risco
-        resolves_at_str = market_data.get("resolves_at")
-        
-        # Fallback: usar config padrão se não tiver datas
-        duration_seconds = 86400 # Default 1d
-        
-        try:
-            from datetime import datetime
-            if resolves_at_str:
-                res_dt = datetime.fromisoformat(resolves_at_str.replace("Z", "+00:00"))
-                # Se tivermos created_at do mercado, usamos. Se não, usamos created_at do trade como proxy
-                start_dt = datetime.utcnow().replace(tzinfo=None) # Agora como fallback
-                if "created_at" in market_data: # Se o objeto market tiver
-                     start_dt = datetime.fromisoformat(market_data["created_at"].replace("Z", "+00:00"))
-                elif "created_at" in trade: # Usar data do trade
-                     start_dt = datetime.fromisoformat(trade["created_at"])
-                
-                if res_dt.tzinfo: res_dt = res_dt.astimezone(None).replace(tzinfo=None)
-                if start_dt.tzinfo: start_dt = start_dt.astimezone(None).replace(tzinfo=None)
-                
-                duration_seconds = (res_dt - start_dt).total_seconds()
-        except Exception as e:
-            logger.warning(f"Erro calculando duração para check_exit: {e}")
-
-        duration_hours = duration_seconds / 3600.0
-
-        # Escolher perfil (v3)
-        risk_cfg = config.RISK_CONFIG["updown_bot"]
-        if duration_hours <= 24: # 1 dia
-            profile = risk_cfg["1d"]
-        elif duration_hours <= 72: # 3 dias
-            profile = risk_cfg["3d"]
-        else: # > 3 dias (Conservador)
-            profile = risk_cfg["conservative"]
-            # logger.warning(f"Market {duration_hours:.1f}h fora do sweet spot → usando risk conservador")
+        # Escolher perfil (v3) usando método auxiliar
+        # Nota: trade pode não ter created_at se for novo, mas market_data deve ter
+        # Vamos passar market_data que é o principal
+        _, profile = self._get_risk_profile(market_data)
 
         # Calcular PnL atual baseado no Fill Price real
         # entry_price = trade["amount"] / trade["shares_bought"] (já considera spread pago)
         shares = trade.get("shares_bought", 0)
         amount = trade.get("amount", 0)
+
         
         if shares <= 0 or amount <= 0:
             return None

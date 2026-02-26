@@ -215,13 +215,18 @@ class BaseBot(ABC):
             f"mom={momentum_signal:+.3f} vol={vol:.4f} tte={tte:.0f}s strat={strat:+.3f}"
         )
 
+        # Combine ML features with any custom trade features from analyze()
+        final_features = {"x": x, "market_price": market_price, "p_yes": p_yes, "p_entry_yes": p_eff_yes, "p_entry_no": p_eff_no}
+        if raw_signal.get("trade_features"):
+            final_features.update(raw_signal.get("trade_features"))
+
         return {
             "action": "buy",
             "side": side,
             "confidence": confidence,
             "reasoning": reasoning,
             "suggested_amount": float(amount),
-            "features": {"x": x, "market_price": market_price, "p_yes": p_yes, "p_entry_yes": p_eff_yes, "p_entry_no": p_eff_no},
+            "features": final_features,
         }
 
     def execute(self, signal: dict, market: dict) -> dict:

@@ -40,6 +40,14 @@ class MeanRevSLBot(MeanRevBot):
             amount = decision.get("suggested_amount", 0) * 1.5
             decision["suggested_amount"] = min(amount, config.get_max_position())
             decision["reasoning"] += " [SL: 1.5x size, loss capped 25%]"
+            
+            # Add risk info to features for dashboard display
+            if "features" not in decision: decision["features"] = {}
+            decision["features"].update({
+                "risk_profile": "SL 25% (Fixed)",
+                "sl_percent": -self.stop_loss_pct * 100.0
+            })
+            
             return decision
 
         if decision.get("action") == "skip":

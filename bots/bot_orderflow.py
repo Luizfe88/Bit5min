@@ -134,10 +134,18 @@ class OrderflowBot(BaseBot):
             from signals.orderflow import get_feed
             feed = get_feed()
             
-            if not feed or market_id not in feed.data:
+            if not feed:
                 return None
+                
+            # Se não estiver no cache, força atualização
+            if market_id not in feed.data:
+                # Precisa de API key? O feed usa se tiver, senão simula
+                # Onde pegar API key? Do config ou self.api_key se disponível
+                # BaseBot não armazena api_key geralmente, mas arena sim.
+                # Vamos tentar chamar sem api_key primeiro (vai simular)
+                feed.get_signals(market_id)
             
-            return feed.data[market_id]
+            return feed.data.get(market_id)
             
         except Exception as e:
             logger.error(f"Erro ao obter dados de orderflow para {market_id}: {e}")

@@ -308,16 +308,24 @@ function updateOpenPositions(positions) {
         tbody.innerHTML = '';
         return;
     }
-    tbody.innerHTML = positions.map(p => `
+    tbody.innerHTML = positions.map(p => {
+        let riskHtml = '-';
+        if (p.risk_analysis) {
+            const sl = p.risk_analysis.sl_trigger || '-';
+            const tp = p.risk_analysis.tp_target || '-';
+            riskHtml = `<span style="font-size:11px; color:#8b949e;">SL: ${sl}<br>TP: ${tp}</span>`;
+        }
+        return `
         <tr>
             <td>${p.bot_name}</td>
             <td>${(p.market_question || '').slice(0, 40)}</td>
             <td>${p.side}</td>
             <td>$${p.invested || '0.00'}</td>
+            <td>${riskHtml}</td>
             <td>${fmtTradeTime(p.open_time)}</td>
             <td>${p.expected_close_time || '-'}</td>
         </tr>
-    `).join('');
+    `}).join('');
 }
 
 function updateEarnings(data) {

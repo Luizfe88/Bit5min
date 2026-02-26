@@ -342,6 +342,84 @@ async def reset_day(request: Request):
         return JSONResponse({"error": "internal error"}, 500)
 
 
+@app.get("/api/positions")
+async def get_positions():
+    """Get all open positions with calculated Risk/Reward info."""
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE outcome IS NULL AND mode=? ORDER BY created_at DESC",
+                (config.get_current_mode(),)
+            ).fetchall()
+            
+        positions = [dict(r) for r in rows]
+        
+        # Enriquecer com Risk Info
+        risk_cfg = getattr(config, "RISK_CONFIG", {}).get("updown_bot", {})
+        
+        for p in positions:
+            # Calcular preço de entrada
+            try:
+                shares = float(p.get("shares_bought") or 0)
+                amount = float(p.get("amount") or 0)
+                entry_price = amount / shares if shares > 0 else 0
+                p["entry_price"] = round(entry_price, 3)
+            except:
+                p["entry_price"] = 0
+                
+            # Se for um bot com risco gerenciado
+            risk_info = None
+            try:
+                if p.get("trade_features"):
+                    features = json.loads(p["trade_features"])
+                    # Suporte para formato do UpDownBot v3
+                    if "sl_percent" in features:
+                        risk_info = features
+            except Exception:
+                pass
+
+            if risk_info and entry_price > 0:
+                # Calcular targets usando info salva
+                sl_pct = float(risk_info.get("sl_percent", 0))
+                tp_pct = float(risk_info.get("tp_percent", 0))
+                
+                # Preço da share (0-1)
+                sl_price = entry_price * (1 + sl_pct/100.0)
+                tp_price = entry_price * (1 + tp_pct/100.0)
+                
+                p["risk_analysis"] = {
+                    "profile": risk_info.get("risk_profile", "Custom"),
+                    "sl_trigger": f"{sl_pct}% (${sl_price:.3f})",
+                    "tp_target": f"{tp_pct}% (${tp_price:.3f})",
+                    "current_pnl": "N/A"
+                }
+            elif "updown" in p["bot_name"] and entry_price > 0:
+                # Fallback: Tentar determinar perfil (default 1d)
+                profile = risk_cfg.get("1d", {})
+                
+                # Calcular targets de preço
+                sl_pct = profile.get("sl_percent", -40.0)
+                tp_pct = profile.get("tp_full", 85.0)
+                
+                # Preço da share (0-1)
+                sl_price = entry_price * (1 + sl_pct/100.0)
+                tp_price = entry_price * (1 + tp_pct/100.0)
+                
+                # Formatar para exibição
+                p["risk_analysis"] = {
+                    "profile": "1d (Default)",
+                    "sl_trigger": f"{sl_pct}% (${sl_price:.3f})",
+                    "tp_target": f"{tp_pct}% (${tp_price:.3f})",
+                    "current_pnl": "N/A" # Frontend pode calcular se tiver current price
+                }
+                
+        return JSONResponse(positions)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/markets")
 async def get_markets():
     """Get active BTC 5-min markets with close times."""
@@ -447,6 +525,70 @@ async def get_evolution():
             if isinstance(h.get(key), str):
                 h[key] = json.loads(h[key])
     return JSONResponse(history)
+
+
+@app.get("/api/positions")
+async def get_positions():
+    """Get all open positions with risk info (SL/TP)."""
+    try:
+        with db.get_conn() as conn:
+            # Pega trades abertos do modo atual
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE outcome IS NULL AND mode=?",
+                (config.get_current_mode(),)
+            ).fetchall()
+            
+        positions = [dict(r) for r in rows]
+        
+        # Enriquecer com Risk Info do config
+        risk_cfg = getattr(config, "RISK_CONFIG", {}).get("updown_bot", {})
+        
+        for p in positions:
+            # Parse trade_features se for string
+            if isinstance(p.get("trade_features"), str):
+                try:
+                    p["trade_features"] = json.loads(p["trade_features"])
+                except:
+                    pass
+
+            # Se for um bot UpDown, calcular SL/TP estimados
+            if "updown" in p["bot_name"]:
+                # Assumir perfil 1d como padrão se não soubermos a duração
+                # Idealmente pegariamos a duração do 'trade_features' ou DB
+                profile_name = "1d"
+                profile = risk_cfg.get("1d", {})
+                
+                # Se tivermos info de duração (futuro), ajustamos
+                # duration = p.get("trade_features", {}).get("duration_hours")
+                # if duration and duration > 24: profile = risk_cfg.get("3d")
+                
+                try:
+                    entry_price = p["amount"] / p["shares_bought"] if p.get("shares_bought") else 0
+                    if entry_price > 0:
+                        sl_pct = profile.get("sl_percent", -40)
+                        tp_pct = profile.get("tp_full", 85)
+                        
+                        # Preço da Share (0-1)
+                        # SL Price: Preço que se atingido aciona venda
+                        # Se comprei a 0.50 e SL é -40% -> Vendo a 0.30
+                        sl_price = entry_price * (1 + sl_pct/100)
+                        tp_price = entry_price * (1 + tp_pct/100)
+                        
+                        p["risk_info"] = {
+                            "sl_percent": sl_pct,
+                            "tp_percent": tp_pct,
+                            "sl_price": round(sl_price, 3),
+                            "tp_price": round(tp_price, 3),
+                            "entry_price": round(entry_price, 3),
+                            "profile": profile_name
+                        }
+                except Exception as e:
+                    print(f"Erro calculando risk info: {e}")
+                    
+        return JSONResponse(positions)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 
 @app.get("/api/trades")
