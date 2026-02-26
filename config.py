@@ -138,6 +138,23 @@ TRADE_MAX_TTE_SECONDS = MARKET_FILTER["max_window_seconds"]
 POSITION_SIZE_PCT = _env_float("BOT_ARENA_POSITION_SIZE_PCT", 0.01) # 1.0% default
 MAX_OPEN_TRADES = _env_int("BOT_ARENA_MAX_OPEN_TRADES", 6)
 
+# Risk Management - SL/TP Defaults (New System)
+MEANREV_SL_PCT = _env_float("BOT_ARENA_MEANREV_SL_PCT", -0.25)
+MEANREV_TP_PCT = _env_float("BOT_ARENA_MEANREV_TP_PCT", 0.18)
+GRACE_PERIOD_SECONDS = _env_int("BOT_ARENA_GRACE_PERIOD_SECONDS", 45)
+
+# Per-Bot SL/TP Enable/Disable
+ENABLE_SL_TP_PER_BOT = {
+    "meanrev-v1": True,
+    "meanrev-sl-v1": True,
+    "meanrev-tp-v1": True,
+    "hybrid-v1": True,
+    "momentum-v1": False,
+    "updown-rsi-v3": False,
+    "sentiment-v1": False,
+    "orderflow-v1": False
+}
+
 # Risk Config for Specific Bots (UpDown v3)
 RISK_CONFIG = {
     "updown_bot": {

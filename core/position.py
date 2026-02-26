@@ -16,6 +16,7 @@ class OpenPosition:
     trade_id: Optional[str] = None
     shares: float = 0.0  # Quantidade de shares compradas
     token_id: Optional[str] = None # Para facilitar venda
+    grace_period_ends_at: Optional[float] = None  # Timestamp até quando ignorar SL/TP
 
     def __post_init__(self):
         # Validação básica

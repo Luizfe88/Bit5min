@@ -81,30 +81,25 @@ class BaseBot(ABC):
         self._pause_reason = None
         
         # --- Centralized SL/TP Configuration ---
-        # Default disabled, enable per bot below
+        # Default disabled, check config.ENABLE_SL_TP_PER_BOT first
         self.enable_sl_tp = False
         
-        # Initialize from class attributes if set, otherwise use defaults
-        # Note: stop_loss_pct is usually positive in class attr (e.g. 0.25 for 25% loss)
-        # We convert to negative for calculation (e.g. -0.25)
+        # 1. Check Global Config per Bot Name
+        # Exact match or substring match for "meanrev" etc
+        for key, enabled in config.ENABLE_SL_TP_PER_BOT.items():
+            if key in name:
+                self.enable_sl_tp = enabled
+                break
+        
+        # 2. Defaults from Config
+        self.sl_pct = config.MEANREV_SL_PCT  # Default -25%
+        self.tp_pct = config.MEANREV_TP_PCT  # Default +18%
+
+        # 3. Override if class has specific attributes (e.g. MeanRevSLBot, MeanRevTPBot)
         if hasattr(self, "stop_loss_pct") and self.stop_loss_pct > 0:
              self.sl_pct = -abs(self.stop_loss_pct)
-        else:
-             self.sl_pct = -0.10  # Default -10% Stop Loss
-
         if hasattr(self, "take_profit_pct") and self.take_profit_pct > 0:
              self.tp_pct = abs(self.take_profit_pct)
-        else:
-             self.tp_pct = 0.15   # Default +15% Take Profit
-        
-        # Auto-enable for specific bots (Mean Reversion & SL variants)
-        lower_name = name.lower()
-        if "meanrev" in lower_name or "sl" in lower_name:
-            self.enable_sl_tp = True
-        
-        # Recommended: Hybrid also enabled
-        if "hybrid" in lower_name:
-            self.enable_sl_tp = True
 
     @abstractmethod
     def analyze(self, market: dict, signals: dict) -> dict:
@@ -325,19 +320,21 @@ class BaseBot(ABC):
                         token_id = market.get("polymarket_no_token_id")
                     
                     # Calcular entry price real
-                    entry_price = float(result.get("price", 0) or 0)
-                    # Support both Paper (shares_bought) and Live (size) keys
-                    shares = float(result.get("shares_bought") or result.get("size") or 0)
+                    # 1. Tentar pegar preço explícito do retorno da API (Simmer/Polymarket)
+                    entry_price = float(result.get("price") or result.get("avgPrice") or 0)
                     
+                    # 2. Se falhar, tentar calcular via amount / shares
+                    shares = float(result.get("shares_bought") or result.get("size") or 0)
                     if entry_price <= 0 and shares > 0:
                          entry_price = amount / shares
                     
-                    # Se ainda zero, usar preço de mercado como fallback
+                    # 3. Fallback final: preço estimado do mercado (apenas se tudo falhar)
                     if entry_price <= 0:
                         mkt_price = market.get("current_price", 0.5)
                         try: mkt_price = float(mkt_price)
                         except: mkt_price = 0.5
                         entry_price = mkt_price if side == "yes" else (1.0 - mkt_price)
+                        logger.warning(f"[{self.name}] Entry price fallback used: {entry_price:.3f}")
 
                     trade_id = result.get("trade_id") or result.get("order_id")
                     
@@ -354,16 +351,17 @@ class BaseBot(ABC):
                     if self.enable_sl_tp and sl_price is None and tp_price is None:
                         # Calculate based on entry price if enabled and not provided by signal
                         if entry_price > 0:
-                            # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.90 = 0.45
+                            # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.75 = 0.375 (-25%)
+                            # Note: self.sl_pct is negative (e.g. -0.25)
                             calc_sl = entry_price * (1.0 + self.sl_pct)
-                            # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.15 = 0.575
+                            # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
                             calc_tp = entry_price * (1.0 + self.tp_pct)
                             
-                            # Safety bounds
-                            sl_price = max(0.01, min(0.99, calc_sl))
-                            tp_price = max(0.01, min(0.99, calc_tp))
+                            # Safety bounds (0.001 - 0.999)
+                            sl_price = max(0.001, min(0.999, calc_sl))
+                            tp_price = max(0.001, min(0.999, calc_tp))
                             
-                            logger.info(f"[{self.name}] Auto-SL/TP: Entry={entry_price:.3f} SL={sl_price:.3f} TP={tp_price:.3f}")
+                            # logger.info(f"[{self.name}] Auto-SL/TP: Entry={entry_price:.3f} SL={sl_price:.3f} TP={tp_price:.3f}")
 
                     pos = OpenPosition(
                         market_id=market.get("id") or market.get("market_id"),
