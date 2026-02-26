@@ -24,45 +24,61 @@ class MeanRevSLBot(MeanRevBot):
         self.strategy_type = "mean_reversion_sl"
 
     def make_decision(self, market, signals):
-        """SL bot: more aggressive entries since downside is capped at 25%.
-
-        With a 25% stop-loss, max loss per trade is only 25% of the position
-        instead of 100%. This changes the risk/reward math:
-        - A trade with 40% win probability at even odds is -EV normally
-        - But with SL capping losses at 25%, it becomes +EV
-        So we trade more aggressively and size up.
-        """
+        """SL bot: more aggressive entries since downside is capped at 25%."""
         decision = super().make_decision(market, signals)
 
+        # 1. Ajuste de Tamanho (Agressividade)
         if decision.get("action") == "buy":
-            # Scale up position size — max loss is 25% of position, not 100%
-            # So a $6 trade can only lose $1.50 (same risk as normal $1.50 trade)
             amount = decision.get("suggested_amount", 0) * 1.5
             decision["suggested_amount"] = min(amount, config.get_max_position())
-            decision["reasoning"] += " [SL: 1.5x size, loss capped 25%]"
+            decision["reasoning"] += " [SL: 1.5x size]"
             
-            # Add risk info to features for dashboard display
             if "features" not in decision: decision["features"] = {}
             decision["features"].update({
                 "risk_profile": "SL 25% (Fixed)",
                 "sl_percent": -self.stop_loss_pct * 100.0
             })
-            
-            return decision
 
+        # 2. Captura de Oportunidades Marginais
         if decision.get("action") == "skip":
             conf = decision.get("confidence", 0)
-            # Take marginal trades that base bot would skip —
-            # at 25% SL the risk is bounded so small edges are worth taking
             if conf >= 0.03:
                 market_price = market.get("current_price", 0.5)
                 side = decision.get("side", "yes")
-                # Still respect market consensus guard
-                if (market_price > 0.65 and side == "no") or (market_price < 0.35 and side == "yes"):
-                    return decision
-                max_pos = config.get_max_position()
-                decision["action"] = "buy"
-                decision["suggested_amount"] = max_pos * 0.05  # small size for marginal trades
-                decision["reasoning"] += " [SL override: marginal edge, loss capped]"
+                if not ((market_price > 0.65 and side == "no") or (market_price < 0.35 and side == "yes")):
+                    max_pos = config.get_max_position()
+                    decision["action"] = "buy"
+                    decision["suggested_amount"] = max_pos * 0.05
+                    decision["reasoning"] += " [SL override: marginal edge]"
+
+        # 3. Definição de SL e TP (Novo Sistema)
+        if decision.get("action") == "buy":
+            features = decision.get("features", {})
+            side = decision.get("side", "yes")
+            
+            # Estimar preço de entrada
+            entry_est = 0.5
+            try:
+                if side == "yes":
+                    entry_est = float(features.get("p_entry_yes", market.get("current_price", 0.5)))
+                else:
+                    mkt_price = float(market.get("current_price", 0.5))
+                    entry_est = float(features.get("p_entry_no", 1.0 - mkt_price))
+            except (ValueError, TypeError):
+                entry_est = 0.5
+            
+            # Configuração de SL/TP
+            sl_pct = 0.10   # 10% de perda máxima
+            tp_pct = 0.15   # 15% de lucro alvo
+            
+            if decision.get("confidence", 0) > 0.15:
+                tp_pct = 0.20  # Aumenta alvo para alta convicção
+            
+            sl_price = entry_est * (1.0 - sl_pct)
+            tp_price = entry_est * (1.0 + tp_pct)
+            
+            decision["sl_price"] = round(sl_price, 3)
+            decision["tp_price"] = round(tp_price, 3)
+            decision["reasoning"] += f" [SL@{sl_price:.3f} TP@{tp_price:.3f}]"
 
         return decision

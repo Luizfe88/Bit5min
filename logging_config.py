@@ -2,6 +2,7 @@
 
 import logging
 import pytz
+import os
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
@@ -51,16 +52,30 @@ def setup_logging_with_brt(name, level=logging.INFO, log_file=None):
     
     # File handler if specified
     if log_file:
-        # Use TimedRotatingFileHandler for rotation every 12 hours
+        # Use TimedRotatingFileHandler for rotation every 1 hour
         file_handler = TimedRotatingFileHandler(
             log_file,
             when='H',           # Rotate by hours
-            interval=12,          # Every 12 hours
-            backupCount=10,      # Keep 10 backup files
+            interval=1,         # Every 1 hour
+            backupCount=168,    # Keep 1 week (24 * 7 hours)
             encoding='utf-8',
             delay=False,
-            utc=False            # Use local time for rotation
+            utc=False           # Use local time for rotation
         )
+        
+        # Suffix format: dd-mm-yy-HH.log
+        # This will be appended to the base filename
+        file_handler.suffix = "%d-%m-%y-%H.log"
+        
+        # Custom namer to clean up the filename
+        # Default behavior: base.log -> base.log.dd-mm-yy-HH.log
+        # Desired behavior: trading-arena.log -> trading-arena-dd-mm-yy-HH.log
+        def custom_namer(name):
+            # name comes in as /path/to/trading-arena.log.26-02-26-14.log
+            # We want /path/to/trading-arena-26-02-26-14.log
+            return name.replace(".log.", "-")
+            
+        file_handler.namer = custom_namer
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     

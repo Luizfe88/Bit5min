@@ -79,6 +79,32 @@ class BaseBot(ABC):
         self.lineage = lineage or name
         self._paused = False
         self._pause_reason = None
+        
+        # --- Centralized SL/TP Configuration ---
+        # Default disabled, enable per bot below
+        self.enable_sl_tp = False
+        
+        # Initialize from class attributes if set, otherwise use defaults
+        # Note: stop_loss_pct is usually positive in class attr (e.g. 0.25 for 25% loss)
+        # We convert to negative for calculation (e.g. -0.25)
+        if hasattr(self, "stop_loss_pct") and self.stop_loss_pct > 0:
+             self.sl_pct = -abs(self.stop_loss_pct)
+        else:
+             self.sl_pct = -0.10  # Default -10% Stop Loss
+
+        if hasattr(self, "take_profit_pct") and self.take_profit_pct > 0:
+             self.tp_pct = abs(self.take_profit_pct)
+        else:
+             self.tp_pct = 0.15   # Default +15% Take Profit
+        
+        # Auto-enable for specific bots (Mean Reversion & SL variants)
+        lower_name = name.lower()
+        if "meanrev" in lower_name or "sl" in lower_name:
+            self.enable_sl_tp = True
+        
+        # Recommended: Hybrid also enabled
+        if "hybrid" in lower_name:
+            self.enable_sl_tp = True
 
     @abstractmethod
     def analyze(self, market: dict, signals: dict) -> dict:
@@ -281,9 +307,83 @@ class BaseBot(ABC):
 
         try:
             if mode == "live":
-                return self._execute_live(signal, market, amount, mode)
+                result = self._execute_live(signal, market, amount, mode)
             else:
-                return self._execute_paper(signal, market, amount, venue, mode)
+                result = self._execute_paper(signal, market, amount, venue, mode)
+
+            # --- Registrar Posição no RiskManager ---
+            if result.get("success"):
+                try:
+                    from core.position import OpenPosition
+                    import time
+                    
+                    side = signal["side"].lower()
+                    token_id = None
+                    if side == "yes":
+                        token_id = market.get("polymarket_token_id")
+                    else:
+                        token_id = market.get("polymarket_no_token_id")
+                    
+                    # Calcular entry price real
+                    entry_price = float(result.get("price", 0) or 0)
+                    # Support both Paper (shares_bought) and Live (size) keys
+                    shares = float(result.get("shares_bought") or result.get("size") or 0)
+                    
+                    if entry_price <= 0 and shares > 0:
+                         entry_price = amount / shares
+                    
+                    # Se ainda zero, usar preço de mercado como fallback
+                    if entry_price <= 0:
+                        mkt_price = market.get("current_price", 0.5)
+                        try: mkt_price = float(mkt_price)
+                        except: mkt_price = 0.5
+                        entry_price = mkt_price if side == "yes" else (1.0 - mkt_price)
+
+                    trade_id = result.get("trade_id") or result.get("order_id")
+                    
+                    # Se não tiver trade_id, gerar um temporário para não perder tracking (fallback)
+                    if not trade_id:
+                        import uuid
+                        trade_id = f"temp_{uuid.uuid4().hex[:8]}"
+                        logger.warning(f"Trade ID ausente no retorno da execução para {self.name}. Usando ID temp: {trade_id}")
+
+                    # --- SL/TP Calculation (Centralized) ---
+                    sl_price = signal.get("sl_price")
+                    tp_price = signal.get("tp_price")
+                    
+                    if self.enable_sl_tp and sl_price is None and tp_price is None:
+                        # Calculate based on entry price if enabled and not provided by signal
+                        if entry_price > 0:
+                            # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.90 = 0.45
+                            calc_sl = entry_price * (1.0 + self.sl_pct)
+                            # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.15 = 0.575
+                            calc_tp = entry_price * (1.0 + self.tp_pct)
+                            
+                            # Safety bounds
+                            sl_price = max(0.01, min(0.99, calc_sl))
+                            tp_price = max(0.01, min(0.99, calc_tp))
+                            
+                            logger.info(f"[{self.name}] Auto-SL/TP: Entry={entry_price:.3f} SL={sl_price:.3f} TP={tp_price:.3f}")
+
+                    pos = OpenPosition(
+                        market_id=market.get("id") or market.get("market_id"),
+                        bot_name=self.name,
+                        direction=signal["side"],
+                        entry_price=entry_price,
+                        size_usd=amount,
+                        entry_time=time.time(),
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        confidence=signal.get("confidence", 0.0),
+                        trade_id=trade_id,
+                        shares=shares,
+                        token_id=token_id
+                    )
+                    risk_manager.add_position(pos)
+                except Exception as pos_err:
+                    logger.error(f"Erro ao registrar posição no RiskManager: {pos_err}")
+
+            return result
 
         except Exception as e:
             logger.error(f"[{self.name}] Trade exception: {e}")
@@ -382,7 +482,10 @@ class BaseBot(ABC):
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
             logger.info(f"[{self.name}] Paper trade: {signal['side']} ${amt_s} on {market.get('question', '')[:50]}")
             
-            return {"success": True, "trade_id": result.get("trade_id")}
+            # Retorna resultado completo para o RiskManager usar (shares, price, etc)
+            output = result.copy()
+            output["success"] = True
+            return output
         else:
             logger.error(f"[{self.name}] Paper trade failed: {resp.status_code} {resp.text[:200]}")
             return {"success": False, "reason": f"api_error_{resp.status_code}"}

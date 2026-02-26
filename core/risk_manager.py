@@ -7,10 +7,12 @@ import logging
 import time
 import json
 from datetime import datetime
+from typing import Dict, List, Optional
 
 import config
 import db
 from telegram_notifier import get_telegram_notifier
+from core.position import OpenPosition
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ class ArenaRiskManager:
         self.bankroll = None
         self.limits = {}
         self.last_update = 0
+        self.open_positions: Dict[str, OpenPosition] = {}
         logger.info("✅ ArenaRiskManager inicializado")
 
     def update_bankroll(self, bankroll: float):
@@ -137,6 +140,117 @@ class ArenaRiskManager:
             **self.limits,
             "mode": self.mode
         }
+        
+    def add_position(self, pos: OpenPosition):
+        """Registra uma nova posição aberta para monitoramento."""
+        if not pos.trade_id:
+            logger.warning(f"Tentativa de registrar posição sem trade_id: {pos}")
+            return
+        self.open_positions[pos.trade_id] = pos
+        logger.info(f"RiskManager: Posição registrada {pos.bot_name} {pos.direction} em {pos.market_id} (SL: {pos.sl_price}, TP: {pos.tp_price})")
+
+    def check_sl_tp(self, market_prices: Dict[str, dict]) -> List[tuple[OpenPosition, str, float]]:
+        """
+        Verifica SL/TP para todas as posições abertas.
+        Retorna lista de (posicao, razao, preco_atual).
+        market_prices: dict {market_id: {'current_price': price, ...}}
+        """
+        exits = []
+        for trade_id, pos in list(self.open_positions.items()):
+            market_data = market_prices.get(pos.market_id)
+            if not market_data:
+                continue
+
+            # Determinar preço atual do token que possuímos
+            current_yes_price = market_data.get("current_price")
+            if current_yes_price is None:
+                continue
+            
+            try:
+                current_yes_price = float(current_yes_price)
+            except ValueError:
+                continue
+            
+            if pos.direction == "NO":
+                # Preço do NO = 1 - Preço do YES
+                my_price = 1.0 - current_yes_price
+            else:
+                my_price = current_yes_price
+            
+            # Checar SL
+            if pos.sl_price is not None:
+                # Se preço caiu abaixo do SL
+                if my_price <= pos.sl_price:
+                    exits.append((pos, "SL", my_price))
+                    continue
+            
+            # Checar TP
+            if pos.tp_price is not None:
+                # Se preço subiu acima do TP
+                if my_price >= pos.tp_price:
+                    exits.append((pos, "TP", my_price))
+                    continue
+        
+        return exits
+
+    def close_position(self, pos: OpenPosition, reason: str, current_price: float):
+        """Fecha a posição no mercado secundário (simulado para paper, real para live)."""
+        logger.info(f"[{reason} HIT] {pos.bot_name} fechando {pos.direction} em {pos.market_id}. Entry: {pos.entry_price:.3f}, Now: {current_price:.3f}")
+        
+        success = False
+        pnl = 0.0
+        
+        try:
+            if self.mode == "live":
+                import polymarket_client
+                # Em live, precisamos do token_id para vender
+                if not pos.token_id:
+                     logger.error(f"Erro ao fechar {pos.trade_id}: token_id ausente")
+                     return
+
+                # Vender shares no mercado (side=sell)
+                # Nota: Assumindo que place_market_order suporta side='sell' para fechar long
+                res = polymarket_client.place_market_order(
+                    token_id=pos.token_id,
+                    side="sell", 
+                    amount=pos.shares 
+                )
+                if res.get("success"):
+                    success = True
+                    # Calcular PnL real baseado no preço de execução
+                    exec_price = float(res.get("price", current_price))
+                    pnl = (exec_price - pos.entry_price) * pos.shares
+                else:
+                    logger.error(f"Falha ao fechar posição live {pos.trade_id}: {res.get('error')}")
+
+            else: 
+                # Paper trading: simula fechamento imediato ao preço atual
+                success = True
+                pnl = (current_price - pos.entry_price) * pos.shares
+        
+        except Exception as e:
+            logger.error(f"Exceção ao fechar posição {pos.trade_id}: {e}")
+        
+        if success:
+            # Calcular % PnL
+            pnl_pct = (pnl / pos.size_usd) * 100 if pos.size_usd else 0
+            
+            # Log visível conforme pedido
+            log_msg = (
+                f"[{reason} HIT] {pos.bot_name} closed {pos.direction} "
+                f"${pos.size_usd:.2f} @{current_price:.2f} (entry {pos.entry_price:.2f}) "
+                f"PnL: {('+' if pnl >= 0 else '')}${pnl:.2f} ({pnl_pct:+.1f}%)"
+            )
+            logger.info(log_msg)
+            if self.telegram:
+                self.telegram.send_message(log_msg)
+
+            # Atualizar DB
+            db.resolve_trade(pos.trade_id, reason.lower(), pnl)
+            
+            # Remover da lista de posições abertas
+            if pos.trade_id in self.open_positions:
+                del self.open_positions[pos.trade_id]
 
 # Singleton (use em qualquer lugar)
 risk_manager = ArenaRiskManager()
