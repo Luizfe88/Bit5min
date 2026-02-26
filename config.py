@@ -70,12 +70,13 @@ _db_env = os.environ.get("BOT_ARENA_DB_PATH")
 DB_PATH = Path(_db_env).expanduser() if _db_env else (Path(__file__).parent / "bot_arena.db")
 
 # Target Markets: Multiple crypto 5-min up/down markets
-TARGET_MARKET_QUERIES = ["btc", "eth", "sol", "ethereum", "solana", "bitcoin"]  # Search terms for market discovery
+TARGET_MARKET_QUERIES = ["btc", "eth", "sol", "xrp", "ethereum", "solana", "bitcoin", "ripple"]  # Search terms for market discovery
 TARGET_MARKET_KEYWORDS = ["5 min", "5-min", "5min", "up or down", "up/down"]
-TARGET_MARKET_NAMES = ["Bitcoin Up or Down", "Ethereum Up or Down", "Solana Up or Down"]  # Alternative market names to search
+TARGET_MARKET_NAMES = ["Bitcoin Up or Down", "Ethereum Up or Down", "Solana Up or Down", "Ripple Up or Down", "XRP Up or Down"]  # Alternative market names to search
 BTC_5MIN_MARKET_ID = None  # Will be populated by setup.py
 ETH_5MIN_MARKET_ID = None  # Ethereum market ID
 SOL_5MIN_MARKET_ID = None  # Solana market ID
+XRP_5MIN_MARKET_ID = None  # XRP market ID
 
 # Risk Limits - Paper Mode (adjusted for $10000 bankroll)
 PAPER_MAX_POSITION = _env_float("BOT_ARENA_PAPER_MAX_POSITION", 1500.0)  # 15% of $10k

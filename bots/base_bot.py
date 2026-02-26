@@ -1,4 +1,5 @@
 """Abstract base class all arena bots inherit from."""
+# Atualizado em 2026-02-26 - Validação forte + Retry inteligente + Trade ID robusto
 
 import json
 import random
@@ -249,6 +250,33 @@ class BaseBot(ABC):
             "suggested_amount": float(amount),
             "features": final_features,
         }
+    
+    def _fetch_market_price(self, market_id: str) -> float:
+        """Fetch current market price directly from API (Retry Logic)."""
+        import requests
+        api_key = self._load_api_key()
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        # Tentar 3 vezes (Retry melhorado)
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    f"{config.SIMMER_BASE_URL}/api/sdk/markets/{market_id}",
+                    headers=headers, timeout=5
+                )
+                if resp.status_code == 200:
+                    m_data = resp.json()
+                    # logger.debug(f"[DEBUG PRICE JSON] {json.dumps(m_data, indent=2)}")
+                    # Simmer returns 'current_price' as probability of YES
+                    # Also check alternative keys for safety
+                    price = float(m_data.get("current_price") or m_data.get("last_price") or m_data.get("mid_price") or 0.0)
+                    if 0 < price < 1.1:
+                        return price
+            except Exception as e:
+                logger.warning(f"[{self.name}] Price fetch attempt {attempt+1} failed: {e}")
+        
+        logger.warning(f"[{self.name}] Todas retries de preço falharam. Usando fallback 0.5")
+        return 0.5
 
     def execute(self, signal: dict, market: dict) -> dict:
         """Place a trade via Simmer SDK based on the signal."""
@@ -311,6 +339,7 @@ class BaseBot(ABC):
                 try:
                     from core.position import OpenPosition
                     import time
+                    import uuid
                     
                     side = signal["side"].lower()
                     token_id = None
@@ -319,8 +348,7 @@ class BaseBot(ABC):
                     else:
                         token_id = market.get("polymarket_no_token_id")
                     
-                    # Calcular entry price real
-                    # 1. Tentar pegar preço explícito do retorno da API (Simmer/Polymarket)
+                    # 1. Tentar pegar preço explícito do retorno da execução
                     entry_price = float(result.get("price") or result.get("avgPrice") or 0)
                     
                     # 2. Se falhar, tentar calcular via amount / shares
@@ -328,7 +356,16 @@ class BaseBot(ABC):
                     if entry_price <= 0 and shares > 0:
                          entry_price = amount / shares
                     
-                    # 3. Fallback final: preço estimado do mercado (apenas se tudo falhar)
+                    # 3. Retry Inteligente: Buscar na API se ainda inválido
+                    if entry_price <= 0:
+                        m_id = market.get("id") or market.get("market_id")
+                        logger.info(f"[{self.name}] Entry price missing. Fetching from API...")
+                        p_yes = self._fetch_market_price(m_id)
+                        if p_yes > 0:
+                            entry_price = p_yes if side == "yes" else (1.0 - p_yes)
+                            logger.info(f"[{self.name}] Price recovered from API: {entry_price:.3f}")
+
+                    # 4. Fallback final: preço estimado do mercado local
                     if entry_price <= 0:
                         mkt_price = market.get("current_price", 0.5)
                         try: mkt_price = float(mkt_price)
@@ -336,11 +373,19 @@ class BaseBot(ABC):
                         entry_price = mkt_price if side == "yes" else (1.0 - mkt_price)
                         logger.warning(f"[{self.name}] Entry price fallback used: {entry_price:.3f}")
 
-                    trade_id = result.get("trade_id") or result.get("order_id")
+                    # --- VALIDAÇÃO FORTE DE PREÇO ---
+                    if not (0 < entry_price <= 0.99):
+                         logger.error(f"[{self.name}] Preço inválido ou fora do range (max 0.99): {entry_price:.3f} - abortando entrada")
+                         return {"success": False, "reason": "invalid_entry_price"}
+
+                    # --- Trade ID Robusto ---
+                    trade_id = result.get("trade_id") or result.get("order_id") or result.get("id")
                     
-                    # Se não tiver trade_id, gerar um temporário para não perder tracking (fallback)
+                    # Log Debug Completo para entender estrutura do response
                     if not trade_id:
-                        import uuid
+                        logger.warning(f"[DEBUG ORDER RESPONSE] {json.dumps(result, indent=2)}")
+                        
+                    if not trade_id:
                         trade_id = f"temp_{uuid.uuid4().hex[:8]}"
                         logger.warning(f"Trade ID ausente no retorno da execução para {self.name}. Usando ID temp: {trade_id}")
 
@@ -360,8 +405,6 @@ class BaseBot(ABC):
                             # Safety bounds (0.001 - 0.999)
                             sl_price = max(0.001, min(0.999, calc_sl))
                             tp_price = max(0.001, min(0.999, calc_tp))
-                            
-                            # logger.info(f"[{self.name}] Auto-SL/TP: Entry={entry_price:.3f} SL={sl_price:.3f} TP={tp_price:.3f}")
 
                     pos = OpenPosition(
                         market_id=market.get("id") or market.get("market_id"),

@@ -85,6 +85,11 @@ class UpDownBot(BaseBot):
         if not ("up or down" in question or "up/down" in question):
              return self._hold("ignoring non-updown market")
         
+        # Filtro de Confiança Mínima (v3.1)
+        conf = signals.get("confidence", 0)
+        if conf < 0.20:
+            return self._hold(f"low confidence ({conf:.2f})")
+        
         # 1.1 Spread Check (v3 - Rigoroso)
         # Assumindo que signals tem o book ou spread
         # Se o bot não receber o spread, tentamos calcular se possível
