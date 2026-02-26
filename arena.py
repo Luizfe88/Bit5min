@@ -1035,6 +1035,13 @@ def main_loop(bots, api_key):
 
     logger.info(f"Arena started with {len(bots)} bots in {config.get_current_mode()} mode")
     
+    # === Log de Configurações ===
+    logger.info("=== Configurações Ativas ===")
+    logger.info(f"Janela de Mercado: {config.MARKET_FILTER['min_window_seconds']/3600:.1f}h a {config.MARKET_FILTER['max_window_seconds']/3600:.1f}h")
+    logger.info(f"Janela Fallback: > {config.MARKET_FILTER['fallback_min_seconds']/60:.0f} min (Se permitido)")
+    logger.info(f"Posição Padrão: {config.POSITION_SIZE_PCT:.1%} do bankroll")
+    logger.info("============================")
+    
     # === Persist Bot Configs to DB on Startup ===
     try:
         logger.info(f"Bots em memória: {[b.name for b in bots]}")

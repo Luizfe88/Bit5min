@@ -97,7 +97,10 @@ class OrderflowBot(BaseBot):
         """
         Gera sinal baseado em análise de fluxo de ordens.
         """
-        market_id = market['market_id']
+        market_id = market.get('id') or market.get('market_id')
+        if not market_id:
+            logger.error(f"OrderflowBot: market_id not found in {market.keys()}")
+            return {"signal": 0, "confidence": 0, "reason": "missing_market_id"}
         
         # Obter dados de fluxo
         flow_data = self._get_orderflow_data(market_id)

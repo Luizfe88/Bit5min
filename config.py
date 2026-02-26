@@ -118,9 +118,25 @@ LIVE_FEE_RATE = _env_float("BOT_ARENA_LIVE_FEE_RATE", 0.000)
 MIN_EXPECTED_VALUE = _env_float("BOT_ARENA_MIN_EXPECTED_VALUE", 0.015)
 SKIP_RETRY_SECONDS = _env_int("BOT_ARENA_SKIP_RETRY_SECONDS", 45)
 
-# Market timing window (avoid entering too close to close or too far in advance)
-TRADE_MIN_TTE_SECONDS = _env_int("BOT_ARENA_TRADE_MIN_TTE_SECONDS", 30)
-TRADE_MAX_TTE_SECONDS = _env_int("BOT_ARENA_TRADE_MAX_TTE_SECONDS", 45 * 60)
+# Market timing window - SWEET SPOT: 1 hour to 3 days
+# Prioritize markets with enough time for RSI to play out, but not too long
+MARKET_FILTER = {
+    "min_window_seconds": _env_int("BOT_ARENA_MIN_WINDOW_SECONDS", 3600),        # 1 hour
+    "max_window_seconds": _env_int("BOT_ARENA_MAX_WINDOW_SECONDS", 259200),      # 3 days
+    "preferred_window": "1h-3d",
+    "allow_fallback": True,
+    "fallback_min_seconds": _env_int("BOT_ARENA_FALLBACK_MIN_SECONDS", 1800),    # 30 min fallback
+    "min_liquidity_usd": _env_float("BOT_ARENA_MIN_LIQUIDITY_USD", 5000.0),
+    "max_spread_percent": _env_float("BOT_ARENA_MAX_SPREAD_PERCENT", 3.0),
+}
+
+# Legacy variables kept for compatibility but redirected to new filter logic where possible
+TRADE_MIN_TTE_SECONDS = MARKET_FILTER["min_window_seconds"]
+TRADE_MAX_TTE_SECONDS = MARKET_FILTER["max_window_seconds"]
+
+# Risk Management - Position Sizing
+POSITION_SIZE_PCT = _env_float("BOT_ARENA_POSITION_SIZE_PCT", 0.01) # 1.0% default
+MAX_OPEN_TRADES = _env_int("BOT_ARENA_MAX_OPEN_TRADES", 6)
 
 # Online edge model
 MODEL_LR = 0.05

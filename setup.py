@@ -58,30 +58,75 @@ def get_markets(api_key, limit=100):
     return data.get("markets", data.get("results", []))
 
 
-def discover_btc_market(api_key):
-    """Find the active BTC 5-min up/down market."""
-    all_markets = get_markets(api_key)
-
+def discover_markets(api_key, min_window=None, max_window=None):
+    """
+    Find active crypto markets within the specified time window.
+    Implements the sweet spot strategy: 1h to 3d.
+    """
+    if min_window is None:
+        min_window = config.MARKET_FILTER["min_window_seconds"]
+    if max_window is None:
+        max_window = config.MARKET_FILTER["max_window_seconds"]
+        
+    print(f"🔎 Discovering markets in window: {min_window/3600:.1f}h - {max_window/3600:.1f}h")
+    
+    all_markets = get_markets(api_key, limit=200) # Aumentar limite para achar mais opções
+    valid_markets = []
+    
+    now = datetime.utcnow()
+    
     for m in all_markets:
+        # 1. Filtro de Ativo (Crypto)
         q = m.get("question", "").lower()
-        has_btc = "btc" in q or "bitcoin" in q
-        has_updown = "up or down" in q or "up/down" in q
-        if has_btc and has_updown:
-            mid = m.get("id") or m.get("market_id")
-            print(f"Found BTC 5-min market: {mid}")
-            print(f"   Question: {m.get('question')}")
-            print(f"   Price: {m.get('current_price', 'N/A')}")
-            return m
+        is_crypto = any(k in q for k in config.TARGET_MARKET_QUERIES)
+        is_updown = "up or down" in q or "up/down" in q
+        
+        if not (is_crypto and is_updown):
+            continue
+            
+        # 2. Filtro de Tempo (Sweet Spot)
+        resolves_at_str = m.get("resolves_at")
+        if not resolves_at_str:
+            continue
+            
+        try:
+            # Parse ISO date (handles Z and offsets)
+            resolves_at = datetime.fromisoformat(resolves_at_str.replace("Z", "+00:00"))
+            # Ensure UTC
+            if resolves_at.tzinfo is not None:
+                resolves_at = resolves_at.astimezone(None).replace(tzinfo=None) # Convert to naive UTC
+                
+            seconds_remaining = (resolves_at - now).total_seconds()
+            
+            # Filtro principal
+            if min_window <= seconds_remaining <= max_window:
+                # 3. Filtro de Liquidez/Spread (Opcional, se dados disponíveis)
+                # spread = m.get("spread", 0)
+                # liquidity = m.get("liquidity", 0)
+                # if spread > config.MARKET_FILTER["max_spread_percent"]: continue
+                
+                m["seconds_remaining"] = seconds_remaining
+                valid_markets.append(m)
+                
+        except Exception as e:
+            print(f"Error parsing date for {q}: {e}")
+            continue
+            
+    print(f"✅ Found {len(valid_markets)} markets in the sweet spot.")
+    
+    # Fallback logic
+    if not valid_markets and config.MARKET_FILTER["allow_fallback"]:
+        fallback_min = config.MARKET_FILTER["fallback_min_seconds"]
+        print(f"⚠️ No markets in sweet spot. Trying fallback window: > {fallback_min/60:.0f} mins")
+        return discover_markets(api_key, min_window=fallback_min, max_window=max_window)
+        
+    # Sort by liquidity or time? Let's sort by time to expiration (soonest first within window)
+    valid_markets.sort(key=lambda x: x["seconds_remaining"])
+    
+    return valid_markets
 
-    # Fallback: show what BTC markets exist
-    btc_markets = [m for m in all_markets if "bitcoin" in m.get("question", "").lower()]
-    if btc_markets:
-        print(f"No BTC up/down market found. Found {len(btc_markets)} BTC markets:")
-        for bm in btc_markets[:5]:
-            print(f"   - {bm.get('question', '')[:80]}")
-    else:
-        print("No BTC markets found at all.")
-    return None
+# Alias for compatibility
+discover_btc_market = lambda api_key: discover_markets(api_key)[0] if discover_markets(api_key) else None
 
 
 def place_test_trade(api_key):
