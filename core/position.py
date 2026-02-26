@@ -17,6 +17,11 @@ class OpenPosition:
     shares: float = 0.0  # Quantidade de shares compradas
     token_id: Optional[str] = None # Para facilitar venda
     grace_period_ends_at: Optional[float] = None  # Timestamp até quando ignorar SL/TP
+    
+    # Trailing TP Configuration
+    trailing_enabled: bool = False
+    trailing_distance: Optional[float] = None
+    trailing_step: Optional[float] = None
 
     def __post_init__(self):
         # Validação básica

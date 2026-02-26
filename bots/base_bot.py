@@ -1,5 +1,5 @@
 """Abstract base class all arena bots inherit from."""
-# Atualizado em 2026-02-26 - Validação forte + Retry inteligente + Trade ID robusto
+# Atualizado em 2026-02-26 - Validação forte + Retry inteligente + Trade ID robusto + Market Lock
 
 import json
 import random
@@ -19,6 +19,7 @@ import learning
 import edge_model
 from telegram_notifier import get_telegram_notifier
 from core.risk_manager import risk_manager
+from core.market_lock import market_lock
 
 logger = setup_logging_with_brt(__name__)
 
@@ -101,6 +102,12 @@ class BaseBot(ABC):
              self.sl_pct = -abs(self.stop_loss_pct)
         if hasattr(self, "take_profit_pct") and self.take_profit_pct > 0:
              self.tp_pct = abs(self.take_profit_pct)
+
+        # --- Trailing TP Configuration ---
+        # Carrega do strategy_params se disponível, senão usa defaults
+        self.trailing_enabled = self.strategy_params.get("trailing_enabled", False)
+        self.trailing_distance = self.strategy_params.get("trailing_distance", 0.045)
+        self.trailing_step = self.strategy_params.get("trailing_step", 0.015)
 
     @abstractmethod
     def analyze(self, market: dict, signals: dict) -> dict:
@@ -254,10 +261,11 @@ class BaseBot(ABC):
     def _fetch_market_price(self, market_id: str) -> float:
         """Fetch current market price directly from API (Retry Logic)."""
         import requests
+        import time
         api_key = self._load_api_key()
         headers = {"Authorization": f"Bearer {api_key}"}
         
-        # Tentar 3 vezes (Retry melhorado)
+        # FIX: Robust Price Fetching with Backoff
         for attempt in range(3):
             try:
                 resp = requests.get(
@@ -266,17 +274,33 @@ class BaseBot(ABC):
                 )
                 if resp.status_code == 200:
                     m_data = resp.json()
-                    # logger.debug(f"[DEBUG PRICE JSON] {json.dumps(m_data, indent=2)}")
                     # Simmer returns 'current_price' as probability of YES
-                    # Also check alternative keys for safety
                     price = float(m_data.get("current_price") or m_data.get("last_price") or m_data.get("mid_price") or 0.0)
                     if 0 < price < 1.1:
                         return price
             except Exception as e:
                 logger.warning(f"[{self.name}] Price fetch attempt {attempt+1} failed: {e}")
+            
+            time.sleep(0.3 * (2 ** attempt)) # Backoff: 0.3, 0.6, 1.2
         
-        logger.warning(f"[{self.name}] Todas retries de preço falharam. Usando fallback 0.5")
-        return 0.5
+        # FIX: Abort trade if price fetch fails
+        return 0.0
+
+    # FIX: Hard price filter para mean-reversion segura
+    def is_valid_entry_price(self, price: float, side: str) -> bool:
+        if price < 0.18 or price > 0.82:
+            logger.warning(f"[PRICE FILTER] Preço {price:.3f} fora do range seguro 0.18-0.82. Abortando.")
+            return False
+        
+        # Bonus: filtro assimétrico mais forte
+        if side == "yes" and price > 0.75:
+            logger.warning(f"[PRICE FILTER] YES a {price:.3f} muito alto. Abortando.")
+            return False
+        if side == "no" and price < 0.25:
+            logger.warning(f"[PRICE FILTER] NO a {price:.3f} muito baixo. Abortando.")
+            return False
+        
+        return True
 
     def execute(self, signal: dict, market: dict) -> dict:
         """Place a trade via Simmer SDK based on the signal."""
@@ -297,6 +321,22 @@ class BaseBot(ABC):
         venue = config.get_venue()
         max_pos = config.get_max_position()
 
+        # FIX: Market Lock Check
+        m_id = market.get("id") or market.get("market_id")
+        if m_id and market_lock.is_locked(m_id):
+            logger.info(f"[{self.name}] Market {m_id} is locked by other strategy. Skipping.")
+            return {"success": False, "reason": "market_locked"}
+            
+        # FIX: Hard Price Filter
+        current_price = market.get("current_price", 0.5)
+        try:
+             current_price = float(current_price)
+        except:
+             current_price = 0.5
+        
+        side = signal.get("side", "yes")
+        if not self.is_valid_entry_price(current_price, side):
+             return {"success": False, "reason": "price_filter_abort"}
 
         max_trades_hr = getattr(config, "MAX_TRADES_PER_HOUR_PER_BOT", None)
         if max_trades_hr is not None:
@@ -336,12 +376,16 @@ class BaseBot(ABC):
 
             # --- Registrar Posição no RiskManager ---
             if result.get("success"):
+                # FIX: Acquire Lock
+                if m_id:
+                    market_lock.acquire_lock(m_id)
+
                 try:
                     from core.position import OpenPosition
                     import time
                     import uuid
                     
-                    side = signal["side"].lower()
+                    side = signal.get("side", "yes").lower()  # FIX: Safer access with default
                     token_id = None
                     if side == "yes":
                         token_id = market.get("polymarket_token_id")
@@ -353,25 +397,31 @@ class BaseBot(ABC):
                     
                     # 2. Se falhar, tentar calcular via amount / shares
                     shares = float(result.get("shares_bought") or result.get("size") or 0)
+                    
+                    # FIX: Rigid Fill Validation
+                    if shares <= 0:
+                        logger.error(f"[{self.name}] Trade executed but shares=0. Aborting position registration.")
+                        return {"success": False, "reason": "zero_shares_fill"}
+
                     if entry_price <= 0 and shares > 0:
                          entry_price = amount / shares
                     
+                    # FIX: If calculated price is absurd (> 0.99), assume calculation failed and try fetch
+                    if entry_price > 0.99:
+                         logger.warning(f"[{self.name}] Calculated price {entry_price:.3f} is invalid (>0.99). Shares: {shares}, Amount: {amount}")
+                         entry_price = 0 # Force fetch
+
                     # 3. Retry Inteligente: Buscar na API se ainda inválido
                     if entry_price <= 0:
-                        m_id = market.get("id") or market.get("market_id")
                         logger.info(f"[{self.name}] Entry price missing. Fetching from API...")
                         p_yes = self._fetch_market_price(m_id)
                         if p_yes > 0:
                             entry_price = p_yes if side == "yes" else (1.0 - p_yes)
                             logger.info(f"[{self.name}] Price recovered from API: {entry_price:.3f}")
-
-                    # 4. Fallback final: preço estimado do mercado local
-                    if entry_price <= 0:
-                        mkt_price = market.get("current_price", 0.5)
-                        try: mkt_price = float(mkt_price)
-                        except: mkt_price = 0.5
-                        entry_price = mkt_price if side == "yes" else (1.0 - mkt_price)
-                        logger.warning(f"[{self.name}] Entry price fallback used: {entry_price:.3f}")
+                        else:
+                            # FIX: Abort if price fetch fails
+                            logger.error(f"[{self.name}] Failed to resolve entry price. Aborting position registration.")
+                            return {"success": False, "reason": "price_fetch_failed"}
 
                     # --- VALIDAÇÃO FORTE DE PREÇO ---
                     if not (0 < entry_price <= 0.99):
@@ -393,7 +443,18 @@ class BaseBot(ABC):
                     sl_price = signal.get("sl_price")
                     tp_price = signal.get("tp_price")
                     
-                    if self.enable_sl_tp and sl_price is None and tp_price is None:
+                    # TRAILING TP IMPLEMENTATION
+                    if self.trailing_enabled:
+                        # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
+                        # Inicializamos ele com uma distância segura da entrada
+                        if tp_price is None and entry_price > 0:
+                            tp_price = max(0.001, entry_price - self.trailing_distance)
+                            
+                        # Ainda podemos ter um SL fixo de emergência (ex: -25%)
+                        if sl_price is None and self.enable_sl_tp and entry_price > 0:
+                            sl_price = max(0.001, entry_price * (1.0 + self.sl_pct))
+                    
+                    elif self.enable_sl_tp and sl_price is None and tp_price is None:
                         # Calculate based on entry price if enabled and not provided by signal
                         if entry_price > 0:
                             # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.75 = 0.375 (-25%)
@@ -418,7 +479,11 @@ class BaseBot(ABC):
                         confidence=signal.get("confidence", 0.0),
                         trade_id=trade_id,
                         shares=shares,
-                        token_id=token_id
+                        token_id=token_id,
+                        # Trailing TP Configuration
+                        trailing_enabled=getattr(self, 'trailing_enabled', False),
+                        trailing_distance=getattr(self, 'trailing_distance', None),
+                        trailing_step=getattr(self, 'trailing_step', None)
                     )
                     risk_manager.add_position(pos)
                 except Exception as pos_err:

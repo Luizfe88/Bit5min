@@ -38,12 +38,16 @@ def setup_logging_with_brt(name, level=logging.INFO, log_file=None):
     logger.setLevel(level)
     
     # Clear existing handlers
-    logger.handlers.clear()
+    if logger.hasHandlers():
+        logger.handlers.clear()
     
     # Create formatter with BRT timezone
     formatter = BRTFormatter(
         fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     )
+    
+    # Prevent propagation to root logger (avoids duplicates if root has handlers)
+    logger.propagate = False
     
     # Console handler
     console_handler = logging.StreamHandler()
@@ -78,5 +82,8 @@ def setup_logging_with_brt(name, level=logging.INFO, log_file=None):
         file_handler.namer = custom_namer
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+    
+    # Prevent propagation to root logger to avoid duplication if root has handlers
+    logger.propagate = False
     
     return logger

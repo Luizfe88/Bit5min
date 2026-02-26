@@ -27,6 +27,10 @@ DEFAULT_PARAMS = {
     "ema_long": 50,
     "position_size_pct": 0.01,     # 1% por trade
     "min_confidence": 0.65,
+    # Trailing TP Configuration
+    "trailing_enabled": True,
+    "trailing_distance": 0.045,
+    "trailing_step": 0.015,
 }
 
 class UpDownBot(BaseBot):

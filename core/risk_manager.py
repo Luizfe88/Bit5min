@@ -16,6 +16,18 @@ from core.position import OpenPosition
 
 logger = logging.getLogger(__name__)
 
+# ANSI Colors for better visibility in logs
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
 class ArenaRiskManager:
     def __init__(self):
         self.telegram = get_telegram_notifier()
@@ -153,6 +165,11 @@ class ArenaRiskManager:
             logger.warning(f"Tentativa de registrar posição sem trade_id: {pos}")
             return
             
+        # FIX: Validate Shares > 0 (Requested Validation)
+        if pos.shares <= 0:
+            logger.warning(f"[{pos.bot_name}] Ignorando registro de posição com shares={pos.shares} no {pos.market_id}")
+            return
+
         # 1. Duplicate Check (Double Safety)
         for existing in self.open_positions.values():
             if existing.bot_name == pos.bot_name and existing.market_id == pos.market_id:
@@ -165,12 +182,72 @@ class ArenaRiskManager:
             
         self.open_positions[pos.trade_id] = pos
         
-        # Logging Claro conforme solicitado
+        # Logging Claro e Colorido conforme solicitado
         grace_str = f" grace={config.GRACE_PERIOD_SECONDS}s" if pos.grace_period_ends_at else ""
-        sl_str = f"SL={pos.sl_price:.3f}" if pos.sl_price else "SL=None"
-        tp_str = f"TP={pos.tp_price:.3f}" if pos.tp_price else "TP=None"
         
-        logger.info(f"[ENTRY] {pos.bot_name} {pos.direction} @{pos.entry_price:.3f} (size ${pos.size_usd:.2f}) {sl_str} {tp_str}{grace_str}")
+        # Cores para SL/TP
+        sl_val = f"{pos.sl_price:.3f}" if pos.sl_price else "None"
+        tp_val = f"{pos.tp_price:.3f}" if pos.tp_price else "None"
+        sl_str = f"SL={Colors.RED}{sl_val}{Colors.RESET}"
+        tp_str = f"TP={Colors.GREEN}{tp_val}{Colors.RESET}"
+        
+        # Cor para Side (YES=Green, NO=Red)
+        side_color = Colors.GREEN if pos.direction.upper() == "YES" else Colors.RED
+        
+        logger.info(
+            f"{Colors.BLUE}[ENTRY]{Colors.RESET} "
+            f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+            f"{side_color}{pos.direction}{Colors.RESET} "
+            f"@{Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET} "
+            f"(size ${pos.size_usd:.2f}) "
+            f"{sl_str} {tp_str}{grace_str}"
+        )
+
+    def update_trailing_tp(self, pos: OpenPosition, current_price: float):
+        """
+        Atualiza o TP dinamicamente se trailing estiver habilitado.
+        current_price: O preço ATUAL da posição que possuímos (0.0-1.0).
+                       Se temos NO, current_price já deve ser (1 - YES_price).
+        """
+        if not pos.trailing_enabled or pos.trailing_distance is None:
+            return
+
+        # Só começa a trailing depois do grace period (se houver)
+        if pos.grace_period_ends_at and time.time() < pos.grace_period_ends_at:
+            return
+
+        # Inicialização Segura
+        if pos.tp_price is None:
+            # Inicializa o Trailing Floor abaixo do preço atual
+            pos.tp_price = max(0.01, current_price - pos.trailing_distance)
+            logger.info(
+                f"{Colors.MAGENTA}[TRAILING INIT]{Colors.RESET} "
+                f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                f"inicializou TP em {Colors.GREEN}{pos.tp_price:.3f}{Colors.RESET} "
+                f"(Price: {Colors.YELLOW}{current_price:.3f}{Colors.RESET})"
+            )
+            return
+
+        old_tp = pos.tp_price
+        dist = pos.trailing_distance
+        step = pos.trailing_step or 0.005
+
+        # Lógica Unificada: Trailing TP é um FLOOR que sobe com o preço
+        # Novo TP potencial = Preço Atual - Distância
+        potential_tp = current_price - dist
+        
+        # O TP só pode subir (nunca descer) para proteger lucro
+        # Se o preço subiu muito, o potential_tp vai ser maior que o old_tp
+        if potential_tp > old_tp:
+            # Aplica step mínimo para evitar spam de logs/updates
+            if (potential_tp - old_tp) >= step:
+                pos.tp_price = potential_tp
+                logger.info(
+                    f"{Colors.MAGENTA}[TRAILING]{Colors.RESET} "
+                    f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                    f"atualizou TP de {Colors.YELLOW}{old_tp:.3f}{Colors.RESET} -> {Colors.GREEN}{pos.tp_price:.3f}{Colors.RESET} "
+                    f"(Price: {Colors.YELLOW}{current_price:.3f}{Colors.RESET})"
+                )
 
     def check_sl_tp(self, market_prices: Dict[str, dict]) -> List[tuple[OpenPosition, str, float]]:
         """
@@ -210,7 +287,11 @@ class ArenaRiskManager:
             # Bounds check
             my_price = max(0.001, min(0.999, my_price))
             
-            # Checar SL
+            # --- TRAILING TP UPDATE ---
+            if pos.trailing_enabled:
+                self.update_trailing_tp(pos, my_price)
+            
+            # Checar SL (Fixo)
             if pos.sl_price is not None:
                 if my_price <= pos.sl_price:
                     exits.append((pos, "SL", my_price))
@@ -218,15 +299,26 @@ class ArenaRiskManager:
             
             # Checar TP
             if pos.tp_price is not None:
-                if my_price >= pos.tp_price:
-                    exits.append((pos, "TP", my_price))
-                    continue
+                if pos.trailing_enabled:
+                    # Trailing TP atua como um Stop Loss dinâmico (Floor)
+                    # Se o preço cair abaixo do TP (que subiu), sai.
+                    # Isso garante que saímos com lucro garantido pelo trailing
+                    if my_price <= pos.tp_price:
+                         exits.append((pos, "TP (Trailing)", my_price))
+                         continue
+                else:
+                    # TP Fixo atua como Take Profit (Ceiling)
+                    # Se o preço subir acima do TP, sai.
+                    if my_price >= pos.tp_price:
+                        exits.append((pos, "TP", my_price))
+                        continue
         
         return exits
 
     def close_position(self, pos: OpenPosition, reason: str, current_price: float):
         """Fecha a posição no mercado secundário (simulado para paper, real para live)."""
-        logger.info(f"[{reason} HIT] {pos.bot_name} fechando {pos.direction} em {pos.market_id}. Entry: {pos.entry_price:.3f}, Now: {current_price:.3f}")
+        # Pre-log removido para evitar duplicidade com o log detalhado abaixo, ou mantido simplificado
+        # logger.info(f"[{reason} HIT] {pos.bot_name} fechando {pos.direction} em {pos.market_id}. Entry: {pos.entry_price:.3f}, Now: {current_price:.3f}")
         
         success = False
         pnl = 0.0
@@ -268,14 +360,24 @@ class ArenaRiskManager:
             
             pnl_pct = (pnl / pos.size_usd) * 100 if pos.size_usd else 0
             
+            # Cores para Saída
+            pnl_color = Colors.GREEN if pnl >= 0 else Colors.RED
+            # Motivo também ganha cor baseada no resultado (TP geralmente é verde, SL vermelho)
+            reason_color = Colors.GREEN if pnl >= 0 else Colors.RED
+            
             log_msg = (
-                f"[{reason} HIT] {pos.bot_name} closed {pos.direction} "
-                f"${pos.size_usd:.2f} @{exec_price:.3f} (entry {pos.entry_price:.3f}) "
-                f"PnL: {('+' if pnl >= 0 else '')}${pnl:.2f} ({pnl_pct:+.1f}%)"
+                f"{reason_color}[{reason} HIT]{Colors.RESET} "
+                f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                f"closed {pos.direction} "
+                f"${pos.size_usd:.2f} @{Colors.YELLOW}{exec_price:.3f}{Colors.RESET} "
+                f"(entry {Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET}) "
+                f"PnL: {pnl_color}{('+' if pnl >= 0 else '')}${pnl:.2f} ({pnl_pct:+.1f}%){Colors.RESET}"
             )
             logger.info(log_msg)
             if self.telegram:
-                self.telegram.send_message(log_msg)
+                # Remove ANSI codes for Telegram (simple strip)
+                clean_msg = log_msg.replace(Colors.GREEN, "").replace(Colors.RED, "").replace(Colors.YELLOW, "").replace(Colors.BLUE, "").replace(Colors.MAGENTA, "").replace(Colors.CYAN, "").replace(Colors.BOLD, "").replace(Colors.RESET, "")
+                self.telegram.send_message(clean_msg)
 
             db.resolve_trade(pos.trade_id, reason.lower(), pnl)
             

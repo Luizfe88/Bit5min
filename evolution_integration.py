@@ -52,9 +52,15 @@ class EvolutionIntegration:
         Args:
             bots: Lista de bots ativos
         """
+        # Only log if list actually changed to avoid spam
+        current_names = sorted([b.name for b in bots])
+        cached_names = sorted([b.name for b in self._active_bots])
+        
         self._active_bots = bots
-        logger.info(f"🤖 Bots ativos definidos: {[bot.name for bot in bots] if bots else 'NENHUM'}")
-        logger.info(f"📊 Total de bots ativos: {len(bots)}")
+        
+        if current_names != cached_names:
+            logger.info(f"🤖 Bots ativos definidos: {current_names if bots else 'NENHUM'}")
+            logger.info(f"📊 Total de bots ativos: {len(bots)}")
     
     def get_active_bots_for_evolution(self) -> List[BaseBot]:
         """

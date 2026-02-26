@@ -9,6 +9,10 @@ DEFAULT_PARAMS = {
     "min_confidence": 0.55,
     "trend_strength_weight": 0.7,
     "volume_weight": 0.3,
+    # Trailing TP Configuration
+    "trailing_enabled": True,
+    "trailing_distance": 0.045,
+    "trailing_step": 0.015,
 }
 
 

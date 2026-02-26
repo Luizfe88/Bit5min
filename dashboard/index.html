@@ -163,9 +163,15 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
 <script>
 let currentMode = 'paper';
 
-async function fetchJSON(url) {
-    const resp = await fetch(url);
-    return resp.json();
+async function fetchJSON(url, defaultVal = null) {
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+    } catch (e) {
+        console.warn(`Fetch error for ${url}:`, e);
+        return defaultVal;
+    }
 }
 
 function pnlClass(val) {
@@ -567,28 +573,27 @@ function updateWallet(w) {
 }
 
 async function refresh() {
-    try {
-        const [status, overview, bots, evolution, trades, openPositions, earnings, wallet] = await Promise.all([
-            fetchJSON('/api/status'),
-            fetchJSON('/api/overview'),
-            fetchJSON('/api/bots'),
-            fetchJSON('/api/evolution'),
-            fetchJSON('/api/trades?limit=20'),
-            fetchJSON('/api/open-positions'),
-            fetchJSON('/api/earnings'),
-            fetchJSON('/api/wallet'),
-        ]);
-        updateMode(status.mode);
-        updateOverview(overview.stats);
-        updateWallet(wallet);
-        updateBots(bots);
-        updateEvolution(evolution);
-        updateTrades(trades);
-        updateOpenPositions(openPositions);
-        updateEarnings(earnings);
-    } catch (e) {
-        console.error('Refresh error:', e);
-    }
+    // Fetch all concurrently but handle failures individually via fetchJSON defaultVal
+    const [status, overview, bots, evolution, trades, openPositions, earnings, wallet] = await Promise.all([
+        fetchJSON('/api/status', {mode: 'paper'}),
+        fetchJSON('/api/overview', {stats: {today:{}, week:{}, all_time:{}}}),
+        fetchJSON('/api/bots', []),
+        fetchJSON('/api/evolution', []),
+        fetchJSON('/api/trades?limit=20', []),
+        fetchJSON('/api/open-positions', []),
+        fetchJSON('/api/earnings', {daily:[]}),
+        fetchJSON('/api/wallet', {error: 'Fetch failed'}),
+    ]);
+
+    if (status) updateMode(status.mode);
+    if (overview && overview.stats) updateOverview(overview.stats);
+    if (wallet) updateWallet(wallet);
+    if (Array.isArray(bots)) updateBots(bots);
+    if (Array.isArray(evolution)) updateEvolution(evolution);
+    if (Array.isArray(trades)) updateTrades(trades);
+    if (Array.isArray(openPositions)) updateOpenPositions(openPositions);
+    if (earnings) updateEarnings(earnings);
+
     // Refresh market data alongside other data
     await fetchMarkets();
     updateMarketTimers();

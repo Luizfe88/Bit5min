@@ -79,7 +79,7 @@ SOL_5MIN_MARKET_ID = None  # Solana market ID
 XRP_5MIN_MARKET_ID = None  # XRP market ID
 
 # Risk Limits - Paper Mode (adjusted for $10000 bankroll)
-PAPER_MAX_POSITION = _env_float("BOT_ARENA_PAPER_MAX_POSITION", 1500.0)  # 15% of $10k
+PAPER_MAX_POSITION = _env_float("BOT_ARENA_PAPER_MAX_POSITION", 300.0)  # 3% of $10k (Reduced from 1500 for safety)
 PAPER_MAX_DAILY_LOSS_PER_BOT = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_PER_BOT", 500.0)  # 5% of $10k
 PAPER_MAX_DAILY_LOSS_TOTAL = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_TOTAL", 1500.0)     # 15% of $10k
 PAPER_STARTING_BALANCE = _env_float("BOT_ARENA_PAPER_STARTING_BALANCE", 10000.0)              # $10k default bankroll

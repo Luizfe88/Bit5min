@@ -843,6 +843,9 @@ class PositionMonitorThread(threading.Thread):
 
                 if market_prices:
                     # 2. Check SL/TP via RiskManager
+                    # TRAILING TP IMPLEMENTATION:
+                    # O método check_sl_tp agora lida internamente com a atualização dinâmica
+                    # do Trailing TP para bots habilitados, antes de verificar os hits.
                     exits = risk_manager.check_sl_tp(market_prices)
 
                     if exits:
@@ -995,8 +998,35 @@ def main_loop(bots, api_key):
         logger.warning(f"Não foi possível obter bankroll do dashboard, usando padrão: {e}")
         risk_manager.update_bankroll(config.PAPER_STARTING_BALANCE)
 
+    # Timer para logs periódicos (15min)
+    last_status_log = 0
+    STATUS_LOG_INTERVAL = 900  # 15 minutos
+
     while True:
         try:
+            # === Log Periódico de Status (15min) ===
+            if time.time() - last_status_log > STATUS_LOG_INTERVAL:
+                try:
+                    status = evolution_integration.get_evolution_status()
+                    current_trades = status.get('global_trade_count', 0)
+                    target_trades = status.get('target_trades', 100)
+                    remaining = max(0, target_trades - current_trades)
+                    
+                    # Usando cores se disponível (importado do risk_manager ou definido aqui)
+                    # Como não temos Colors importado aqui, vamos usar log simples mas formatado
+                    logger.info("="*50)
+                    logger.info(f"🧬 STATUS DA EVOLUÇÃO")
+                    logger.info(f"📊 Trades Resolvidos: {current_trades}/{target_trades}")
+                    logger.info(f"⏳ Faltam: {remaining} trades para próxima evolução")
+                    
+                    if status.get('cooldown_active'):
+                        logger.info(f"🔒 Cooldown Ativo: Sim")
+                    
+                    logger.info("="*50)
+                    last_status_log = time.time()
+                except Exception as e:
+                    logger.warning(f"Erro ao logar status de evolução: {e}")
+
             # === REGISTRA BOTS ATIVOS PARA EVOLUÇÃO ===
             evolution_integration.set_active_bots(bots)
             

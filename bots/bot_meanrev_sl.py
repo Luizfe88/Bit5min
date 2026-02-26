@@ -48,6 +48,7 @@ class MeanRevSLBot(MeanRevBot):
                 if not ((market_price > 0.65 and side == "no") or (market_price < 0.35 and side == "yes")):
                     max_pos = config.get_max_position()
                     decision["action"] = "buy"
+                    decision["side"] = side  # FIX: Ensure side is set to prevent KeyError
                     decision["suggested_amount"] = max_pos * 0.05
                     decision["reasoning"] += " [SL override: marginal edge]"
 

@@ -12,6 +12,10 @@ DEFAULT_PARAMS = {
     "agreement_bonus": 0.15,
     "position_size_pct": 0.05,
     "min_confidence": 0.5,
+    # Trailing TP Configuration
+    "trailing_enabled": True,
+    "trailing_distance": 0.045,
+    "trailing_step": 0.015,
 }
 
 
