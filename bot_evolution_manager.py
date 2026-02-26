@@ -1,6 +1,6 @@
 """
 Bot Evolution Manager - Sistema de evolução baseado em trades resolvidos
-Gatilhos: 100 trades globais | Safety net: 8h | Cooldown: 5h
+Gatilhos: 200 trades globais | Safety net: 12h | Cooldown: 5h
 """
 
 import json
@@ -50,8 +50,8 @@ class BotEvolutionManager:
         self.last_evolution_time = None  # Será definido pelo _load_state
         self.evolution_in_progress = False
         self.cooldown_hours = 5
-        self.max_time_without_evolution = 8 * 60 * 60  # 8 horas em segundos
-        self.target_trades = 100
+        self.max_time_without_evolution = 12 * 60 * 60  # 12 horas em segundos
+        self.target_trades = 200
         self.lock = threading.Lock()
         self._bots_source = bots_source  # Função para obter bots ativos
         self._load_state()

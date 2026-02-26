@@ -23,6 +23,7 @@ from bots.bot_hybrid import HybridBot
 from bots.bot_meanrev_sl import MeanRevSLBot
 from bots.bot_meanrev_tp import MeanRevTPBot
 from bots.bot_orderflow import OrderflowBot
+from bots.bot_updown import UpDownBot
 from signals.price_feed import get_feed as get_price_feed
 from signals.sentiment import get_feed as get_sentiment_feed
 from signals.orderflow import get_feed as get_orderflow_feed
@@ -62,6 +63,7 @@ def create_default_bots():
             "sentiment": SentimentBot,
             "hybrid": HybridBot,
             "orderflow": OrderflowBot,
+            "updown": UpDownBot,
         }
         bots = []
         for cfg in active:
@@ -85,6 +87,7 @@ def create_default_bots():
         MeanRevBot(name="meanrev-v1", generation=0),
         MeanRevSLBot(name="meanrev-sl-v1", generation=0),
         OrderflowBot(name="orderflow-v1", generation=0),
+        UpDownBot(name="updown-v1", generation=0),
     ]
 
 
@@ -101,6 +104,7 @@ def create_evolved_bot(winner, loser_type, gen_number):
     from bots.bot_hybrid import DEFAULT_PARAMS as HYBRID_DEFAULTS
     from bots.bot_sentiment import DEFAULT_PARAMS as SENTIMENT_DEFAULTS
     from bots.bot_orderflow import DEFAULT_PARAMS as ORDERFLOW_DEFAULTS
+    from bots.bot_updown import DEFAULT_PARAMS as UPDOWN_DEFAULTS
 
     bot_classes = {
         "momentum": MomentumBot,
@@ -110,6 +114,7 @@ def create_evolved_bot(winner, loser_type, gen_number):
         "sentiment": SentimentBot,
         "hybrid": HybridBot,
         "orderflow": OrderflowBot,
+        "updown": UpDownBot,
     }
 
     default_params_map = {
@@ -120,6 +125,7 @@ def create_evolved_bot(winner, loser_type, gen_number):
         "sentiment": SENTIMENT_DEFAULTS,
         "hybrid": HYBRID_DEFAULTS,
         "orderflow": ORDERFLOW_DEFAULTS,
+        "updown": UPDOWN_DEFAULTS,
     }
 
     # Start with the target strategy's defaults
@@ -1028,6 +1034,43 @@ def main_loop(bots, api_key):
         logger.info(f"Single-account mode: {len(bot_keys)} bot keys found (need {config.NUM_BOTS} for independent trading)")
 
     logger.info(f"Arena started with {len(bots)} bots in {config.get_current_mode()} mode")
+    
+    # === Persist Bot Configs to DB on Startup ===
+    try:
+        logger.info(f"Bots em memória: {[b.name for b in bots]}")
+        existing_bots = set(db.get_active_bot_names())
+        logger.info(f"Bots já no DB: {list(existing_bots)}")
+        
+        saved_count = 0
+        for bot in bots:
+            # Sempre tenta atualizar ou inserir para garantir que os parâmetros estejam sincronizados
+            try:
+                # Se o bot já existe, o save_bot_config pode falhar se não tratarmos updates
+                # Mas a função db.save_bot_config faz INSERT.
+                # Vamos verificar se ele já existe antes de inserir para evitar duplicação ou erro
+                if bot.name not in existing_bots:
+                    db.save_bot_config(
+                        bot_name=bot.name,
+                        strategy_type=bot.strategy_type,
+                        generation=bot.generation,
+                        params=bot.strategy_params,
+                        lineage=bot.lineage
+                    )
+                    logger.info(f"Bot salvo no DB: {bot.name} ({bot.strategy_type}, gen={bot.generation})")
+                    saved_count += 1
+                else:
+                    logger.debug(f"Bot {bot.name} já existe no DB, pulando inserção.")
+            except Exception as e:
+                logger.error(f"Erro ao salvar bot {bot.name} no DB: {e}")
+        
+        if saved_count > 0:
+            logger.info(f"{saved_count} bot(s) salvos no banco de dados.")
+        else:
+            logger.info("Nenhum novo bot precisou ser salvo no DB.")
+            
+    except Exception as e:
+        logger.error(f"Erro crítico ao persistir bots no DB: {e}")
+
     logger.info(f"Bots: {[b.name for b in bots]}")
     logger.info(f"Evolution every {config.EVOLUTION_INTERVAL_HOURS}h")
 
@@ -1280,10 +1323,12 @@ def main():
     bots = create_default_bots()
 
     # Save initial bot configs (only if not already saved)
-    existing = {b["bot_name"] for b in db.get_active_bots()}
-    for bot in bots:
-        if bot.name not in existing:
-            db.save_bot_config(bot.name, bot.strategy_type, bot.generation, bot.strategy_params)
+    # A persistência agora é tratada dentro de main_loop() para ser mais robusta
+    # e garantir que bots criados em memória sejam salvos antes de rodar
+    # existing = {b["bot_name"] for b in db.get_active_bots()}
+    # for bot in bots:
+    #     if bot.name not in existing:
+    #         db.save_bot_config(bot.name, bot.strategy_type, bot.generation, bot.strategy_params)
 
     # Backfill learning data from old resolved trades that had no trade_features
     backfilled = learning.backfill_from_resolved_trades()

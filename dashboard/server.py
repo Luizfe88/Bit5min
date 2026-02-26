@@ -1,5 +1,4 @@
 """FastAPI dashboard backend for the Bot Arena."""
-
 import json
 import os
 import sys
@@ -16,6 +15,13 @@ import config
 import db
 import learning
 from core.risk_manager import risk_manager
+
+# Configurar logger
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("uvicorn")
+logger.info(f"🚀 Iniciando Dashboard Server")
+logger.info(f"📂 DB_PATH: {db.DB_PATH}")
 
 app = FastAPI(title="Polymarket Bot Arena Dashboard")
 
@@ -217,19 +223,26 @@ async def get_wallet():
     mode = config.get_current_mode()
     exposure = _get_open_exposure(mode)
     realized = _get_realized_pnl(mode)
-    virtual_bankroll = _env_float("BOT_ARENA_DASHBOARD_VIRTUAL_BANKROLL")
+    virtual_bankroll = None # Declarar antes
+    
+    # FIX: Tentar obter do DB (estado do arena.py) ou usar config.PAPER_STARTING_BALANCE
+    db_bankroll = db.get_arena_state("virtual_bankroll")
+    if db_bankroll:
+        virtual_bankroll = float(db_bankroll)
+    else:
+        # Fallback para o valor configurado
+        val = _env_float("BOT_ARENA_DASHBOARD_VIRTUAL_BANKROLL")
+        virtual_bankroll = val if val is not None else config.PAPER_STARTING_BALANCE
+
     virtual_equity = None
     virtual_available = None
     if virtual_bankroll is not None:
         virtual_equity = float(virtual_bankroll) + float(realized["all_time"])
         virtual_available = float(virtual_equity) - float(exposure["invested"])
-        # Atualizar RiskManager com novo bankroll
-        try:
-            risk_manager.update_bankroll(float(virtual_bankroll))
-            # Persistir bankroll no banco de dados para o arena.py
-            db.set_arena_state("virtual_bankroll", str(virtual_bankroll))
-        except Exception as e:
-            print(f"Erro ao atualizar RiskManager com novo bankroll: {e}")
+        
+        # Não atualizar o RiskManager aqui, deixe o arena.py gerenciar isso
+        # Apenas lemos o estado compartilhado via DB
+
 
     payload = {
         "mode": mode,
@@ -261,8 +274,17 @@ async def get_wallet():
                 accounts.append({"idx": i, "balance": bal})
                 if bal is not None:
                     total += bal
-            payload["accounts"] = accounts
             payload["cash_balance_total"] = total
+            
+            # Se não temos virtual_bankroll no DB, usamos o config padrão
+            if not db_bankroll:
+                # Revertido: Não usa saldo real da API, mantém o saldo virtual configurado
+                # para isolamento do ambiente de teste
+                pass
+                
+                # Código antigo removido:
+                # if total > 0 and abs(total - config.PAPER_STARTING_BALANCE) > 1:
+                #     ...
     else:
         payload["error"] = "Saldo live não suportado no dashboard (apenas paper/Simmer)."
 
@@ -372,11 +394,13 @@ async def get_overview():
 
 @app.get("/api/bots")
 async def get_bots():
+    # Obtém apenas bots ativos do DB
     active = db.get_active_bots()
-    # Aplicar o mesmo limite de NUM_BOTS que a arena usa
+    
+    # Aplica a mesma lógica de ordenação e limite do arena.py para garantir consistência
     try:
         max_bots = getattr(config, "NUM_BOTS", 5)
-        # Prioriza configs mais recentes por geração e created_at (mesma lógica da arena)
+        # Prioriza configs mais recentes por geração e created_at
         active = sorted(
             active,
             key=lambda r: (int(r.get("generation", 0) or 0), str(r.get("created_at", ""))),
@@ -400,8 +424,8 @@ async def get_bots():
         # Count pending (unresolved) trades so dashboard shows activity
         with db.get_conn() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) as c FROM trades WHERE bot_name=? AND outcome IS NULL",
-                (cfg["bot_name"],)
+                "SELECT COUNT(*) as c FROM trades WHERE bot_name=? AND outcome IS NULL AND mode=?",
+                (cfg["bot_name"], config.get_current_mode())
             ).fetchone()
             pending_count = dict(row)["c"]
         result.append({
@@ -447,9 +471,11 @@ async def get_trades(bot: str = None, limit: int = 50):
         return JSONResponse(trades)
     with db.get_conn() as conn:
         # Show trades with real P&L first, then pending. Skip phantom pnl=0 resolved trades.
+        # FIX: Include open trades (outcome IS NULL) OR resolved trades with PNL
         rows = conn.execute(
             """SELECT * FROM trades
-               WHERE NOT (outcome IS NOT NULL AND (pnl IS NULL OR pnl = 0))
+               WHERE (outcome IS NULL OR pnl IS NOT NULL)
+                 AND NOT (outcome IS NOT NULL AND pnl = 0)
                ORDER BY
                    CASE WHEN outcome IS NOT NULL THEN 0 ELSE 1 END,
                    resolved_at DESC, created_at DESC
@@ -508,31 +534,20 @@ async def get_open_positions():
             print(f"DEBUG: Found {len(rows)} open positions")  # Debug print
             
             positions = []
-        for r in rows:
-            pos = dict(r)
-            
-            # 1. Entry Price
-            if pos['shares_bought'] and pos['shares_bought'] > 0:
-                entry_price = pos['amount'] / pos['shares_bought']
-                pos['entry_price'] = f"${entry_price:.4f}"
+            # FIX: Indentação corrigida para estar DENTRO do bloco with
+            for r in rows:
+                pos = dict(r)
                 
-                # 2. Potential PNL
-                if pos['side'] == 'yes':
-                    potential_pnl = (1 - entry_price) * pos['amount']
-                else:
-                    potential_pnl = entry_price * pos['amount']
-                pos['potential_pnl'] = f"${potential_pnl:.4f}"
-            else:
-                # No shares bought yet - trade not executed
-                pos['entry_price'] = "N/A"
-                pos['potential_pnl'] = "N/A"
-            
-            # 3. Timestamps
-            pos['open_time'] = pos['created_at']
-            pos['expected_close_time'] = extract_close_time(pos['market_question'])
+                # Formatar o valor investido
+                pos['invested'] = _fmt_amount_usd(pos.get('amount'))
+                
+                # 3. Timestamps
+                pos['open_time'] = pos['created_at']
+                pos['expected_close_time'] = extract_close_time(pos['market_question'])
 
-            positions.append(pos)
-            
+                positions.append(pos)
+        
+        # O retorno também deve ser fora do loop mas dentro da função
         print(f"DEBUG: Returning {len(positions)} positions")  # Debug print
         return JSONResponse(positions)
     except Exception as e:

@@ -77,11 +77,11 @@ BTC_5MIN_MARKET_ID = None  # Will be populated by setup.py
 ETH_5MIN_MARKET_ID = None  # Ethereum market ID
 SOL_5MIN_MARKET_ID = None  # Solana market ID
 
-# Risk Limits - Paper Mode (adjusted for $10 bankroll)
-PAPER_MAX_POSITION = _env_float("BOT_ARENA_PAPER_MAX_POSITION", 50.0)
-PAPER_MAX_DAILY_LOSS_PER_BOT = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_PER_BOT", 2.5)  # 25% of $10 bankroll
-PAPER_MAX_DAILY_LOSS_TOTAL = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_TOTAL", 6.0)     # 60% of $10 bankroll
-PAPER_STARTING_BALANCE = _env_float("BOT_ARENA_PAPER_STARTING_BALANCE", 10.0)              # $10 default bankroll
+# Risk Limits - Paper Mode (adjusted for $10000 bankroll)
+PAPER_MAX_POSITION = _env_float("BOT_ARENA_PAPER_MAX_POSITION", 1500.0)  # 15% of $10k
+PAPER_MAX_DAILY_LOSS_PER_BOT = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_PER_BOT", 500.0)  # 5% of $10k
+PAPER_MAX_DAILY_LOSS_TOTAL = _env_float("BOT_ARENA_PAPER_MAX_DAILY_LOSS_TOTAL", 1500.0)     # 15% of $10k
+PAPER_STARTING_BALANCE = _env_float("BOT_ARENA_PAPER_STARTING_BALANCE", 10000.0)              # $10k default bankroll
 
 # Risk Limits - Live Mode (stricter - proportional to $10k bankroll)
 LIVE_MAX_POSITION = _env_float("BOT_ARENA_LIVE_MAX_POSITION", 10.0)
@@ -93,7 +93,7 @@ MAX_LOSS_PCT_PER_BOT = 0.05    # 5% of current bot capital (moderate/conservativ
 MAX_LOSS_PCT_TOTAL = 0.15      # 15% of total current capital (moderate/conservative)
 
 # General Risk Rules (both modes)
-MAX_POSITION_PCT_OF_BALANCE = 0.05  # Never bet more than 5% of balance per trade
+MAX_POSITION_PCT_OF_BALANCE = 0.02  # Never bet more than 2% of balance per trade
 MAX_TOTAL_POSITION_PCT_OF_BALANCE = 0.50  # Never allocate more than 50% of total balance
 MAX_CONSECUTIVE_LOSSES = _env_int("BOT_ARENA_MAX_CONSECUTIVE_LOSSES", 3)  # Pause after 3 consecutive losses
 PAUSE_AFTER_CONSECUTIVE_LOSSES_SECONDS = _env_int("BOT_ARENA_PAUSE_AFTER_CONSECUTIVE_LOSSES", 3600)  # Pause for 1 hour
@@ -101,11 +101,11 @@ MAX_TRADES_PER_HOUR_PER_BOT = 20  # Hard cap to prevent overtrading in 5-min mar
 MIN_TRADE_AMOUNT = _env_float("BOT_ARENA_MIN_TRADE_AMOUNT", 0.01)  # Minimum trade amount
 
 # Evolution Settings
-EVOLUTION_INTERVAL_HOURS = 8  # Safety net: máximo 8h sem evolução
-EVOLUTION_MAX_HOURS = 8  # Máximo de horas para evolução
+EVOLUTION_INTERVAL_HOURS = 12  # Safety net: máximo 12h sem evolução
+EVOLUTION_MAX_HOURS = 12  # Máximo de horas para evolução
 EVOLUTION_MIN_HOURS_COOLDOWN = 5  # Tempo mínimo entre evoluções
-EVOLUTION_MIN_TRADES = 80  # Mínimo de trades para evolução
-EVOLUTION_MIN_RESOLVED_TRADES = 80  # Mínimo de trades resolvidos para evolução (padrão recomendado)
+EVOLUTION_MIN_TRADES = 200  # Mínimo de trades para evolução
+EVOLUTION_MIN_RESOLVED_TRADES = 200  # Mínimo de trades resolvidos para evolução (padrão recomendado)
 MUTATION_RATE = 0.10
 NUM_BOTS = 5
 SURVIVORS_PER_CYCLE = 2
@@ -120,7 +120,7 @@ SKIP_RETRY_SECONDS = _env_int("BOT_ARENA_SKIP_RETRY_SECONDS", 45)
 
 # Market timing window (avoid entering too close to close or too far in advance)
 TRADE_MIN_TTE_SECONDS = _env_int("BOT_ARENA_TRADE_MIN_TTE_SECONDS", 30)
-TRADE_MAX_TTE_SECONDS = _env_int("BOT_ARENA_TRADE_MAX_TTE_SECONDS", 8 * 60)
+TRADE_MAX_TTE_SECONDS = _env_int("BOT_ARENA_TRADE_MAX_TTE_SECONDS", 45 * 60)
 
 # Online edge model
 MODEL_LR = 0.05

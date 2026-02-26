@@ -33,21 +33,19 @@ class ArenaRiskManager:
         logger.info(f"RiskManager atualizado | Banca=${bankroll:.2f} | Perfil={self.limits['profile']}")
 
     def _calculate_dynamic_limits(self, bankroll: float):
-        if bankroll < 10:
-            profile = "UltraSafe"
-            pct_trade = 0.015; pct_bot = 0.06; pct_global = 0.15
-            pct_loss_bot = 0.10; pct_loss_global = 0.22
-        elif bankroll < 25:
-            profile = "Conservative"
-            pct_trade = 0.023; pct_bot = 0.075; pct_global = 0.20
-            pct_loss_bot = 0.125; pct_loss_global = 0.27
-        else:
-            profile = "Balanced"
-            pct_trade = 0.032; pct_bot = 0.09; pct_global = 0.25
-            pct_loss_bot = 0.14; pct_loss_global = 0.30
+        # Configuração Personalizada para $10k ou outros valores
+        # User request: 2% max trade, 15% max per bot, 50% max global
+        
+        pct_trade = config.MAX_POSITION_PCT_OF_BALANCE # 0.02
+        pct_bot = 0.15
+        pct_global = config.MAX_TOTAL_POSITION_PCT_OF_BALANCE # 0.50
+        
+        # Daily loss limits - ajustados proporcionalmente
+        pct_loss_bot = 0.05    # 5% por bot
+        pct_loss_global = 0.15 # 15% global
 
         limits = {
-            "profile": profile,
+            "profile": "Custom ($10k Setup)",
             "max_trade_size": max(0.90, round(bankroll * pct_trade, 2)),
             "max_pos_per_bot": max(1.20, round(bankroll * pct_bot, 2)),
             "max_global_position": max(2.50, round(bankroll * pct_global, 2)),
@@ -55,8 +53,12 @@ class ArenaRiskManager:
             "max_daily_loss_global": round(bankroll * pct_loss_global, 2),
         }
 
-        # Drawdown Scaling 2.0
+        # Drawdown Scaling 2.0 (Mantido para segurança)
         initial = self._get_peak_bankroll()
+        # Se initial for muito baixo (ex: $10), ajusta para o novo padrão se bankroll for alto
+        if initial < 100 and bankroll > 1000:
+            initial = bankroll
+            
         dd_ratio = bankroll / initial if initial > 0 else 1.0
         if dd_ratio < 0.85:
             limits["max_trade_size"] = round(limits["max_trade_size"] * 0.65, 2)

@@ -132,7 +132,7 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
     <div class="section-title">Open Positions</div>
     <div class="card">
         <table id="open-positions-table">
-            <thead><tr><th>Bot</th><th>Market</th><th>Side</th><th>Entry Price</th><th>Potential P&L</th><th>Opened</th><th>Closes At</th></tr></thead>
+            <thead><tr><th>Bot</th><th>Market</th><th>Side</th><th>Invested</th><th>Opened</th><th>Closes At</th></tr></thead>
             <tbody></tbody>
         </table>
     </div>
@@ -313,8 +313,7 @@ function updateOpenPositions(positions) {
             <td>${p.bot_name}</td>
             <td>${(p.market_question || '').slice(0, 40)}</td>
             <td>${p.side}</td>
-            <td>${p.entry_price || 'N/A'}</td>
-            <td>${p.potential_pnl || 'N/A'}</td>
+            <td>$${p.invested || '0.00'}</td>
             <td>${fmtTradeTime(p.open_time)}</td>
             <td>${p.expected_close_time || '-'}</td>
         </tr>

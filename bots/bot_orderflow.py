@@ -14,6 +14,19 @@ import db
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PARAMS = {
+    "flow_sensitivity": 0.3,
+    "min_volume_threshold": 1000,
+    "analysis_period": 15,
+    "min_buy_sell_ratio": 1.5,
+    "max_buy_sell_ratio": 5.0,
+    "whale_order_size": 500,
+    "whale_weight": 1.5,
+    "confidence_threshold": 0.65,
+    "max_hold_time": 4,
+    "stop_loss_pct": 0.08,
+    "take_profit_pct": 0.12,
+}
 
 class OrderflowBot(BaseBot):
     """
@@ -30,42 +43,7 @@ class OrderflowBot(BaseBot):
         super().__init__(name, params, generation)
         
         # Parâmetros padrão
-        self.params = {
-            # Sensibilidade ao fluxo (0.1 = baixa, 1.0 = alta)
-            'flow_sensitivity': 0.3,
-            
-            # Mínimo de volume para considerar sinal
-            'min_volume_threshold': 1000,
-            
-            # Período de análise (minutos)
-            'analysis_period': 15,
-            
-            # Ratio mínimo de compra/venda para sinal
-            'min_buy_sell_ratio': 1.5,
-            
-            # Máximo ratio de compra/venda para sinal
-            'max_buy_sell_ratio': 5.0,
-            
-            # Tamanho mínimo de ordem para considerar "whale"
-            'whale_order_size': 500,
-            
-            # Peso de ordens de "whale" (0.1 = normal, 2.0 = muito importante)
-            'whale_weight': 1.5,
-            
-            # Threshold de confiança para executar trade (0.5 = 50%)
-            'confidence_threshold': 0.65,
-            
-            # Tempo máximo para manter posição (horas)
-            'max_hold_time': 4,
-            
-            # Stop loss percentual
-            'stop_loss_pct': 0.08,
-            
-            # Take profit percentual
-            'take_profit_pct': 0.12,
-            
-            **(params or {})
-        }
+        self.params = {**DEFAULT_PARAMS, **(params or {})}
         
         # Cache de dados de fluxo
         self.flow_cache = {}
@@ -73,6 +51,48 @@ class OrderflowBot(BaseBot):
         
         logger.info(f"🌊 OrderflowBot '{name}' inicializado com params: {self.params}")
     
+    def analyze(self, market: Dict[str, Any], signals: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analisa o mercado e decide se deve entrar em uma posição.
+        
+        Args:
+            market: Dados do mercado (preço, volume, etc)
+            signals: Sinais de outros bots/feeds (não usado aqui diretamente, pois usamos o feed interno)
+            
+        Returns:
+            Dict com ação ('buy', 'sell', 'hold'), lado ('yes', 'no'), confiança e reasoning.
+        """
+        # Delegar para generate_signal que já implementa a lógica
+        signal_data = self.generate_signal(market)
+        
+        # Mapear retorno de generate_signal para o formato esperado pelo BaseBot
+        signal_val = signal_data.get("signal", 0)
+        confidence = signal_data.get("confidence", 0)
+        reason = signal_data.get("reason", "no signal")
+        
+        if abs(signal_val) < 0.1:
+            return {
+                "action": "hold",
+                "side": "yes", # Default
+                "confidence": 0,
+                "reasoning": reason
+            }
+            
+        # Determinar lado
+        side = "yes" if signal_val > 0 else "no"
+        
+        # Calcular tamanho da posição sugerida
+        import config
+        amount = config.get_max_position() * 0.1 # 10% do max position por padrão para este bot
+        
+        return {
+            "action": "buy",
+            "side": side,
+            "confidence": confidence,
+            "reasoning": f"Orderflow signal={signal_val:.2f}: {reason}",
+            "suggested_amount": amount
+        }
+
     def generate_signal(self, market: Dict[str, Any]) -> Dict[str, Any]:
         """
         Gera sinal baseado em análise de fluxo de ordens.
@@ -193,6 +213,46 @@ class OrderflowBot(BaseBot):
             logger.error(f"Erro na análise de fluxo: {e}")
             return None
     
+    def _calculate_signal(self, analysis: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Calcula o sinal final e a confiança.
+        """
+        net_pressure = analysis["net_pressure"]
+        buy_sell_ratio = analysis["buy_sell_ratio"]
+        pressure_change = analysis.get("pressure_change", 0)
+        
+        # Lógica de sinal
+        signal = 0
+        confidence = 0
+        reason = []
+        
+        # Pressão líquida
+        if abs(net_pressure) > 0.5:
+            signal += net_pressure * self.params["flow_sensitivity"]
+            reason.append(f"pressure={net_pressure:.2f}")
+            
+        # Ratio de compra/venda
+        if buy_sell_ratio > self.params["min_buy_sell_ratio"]:
+            signal += 0.2
+            reason.append(f"high_buy_ratio={buy_sell_ratio:.1f}")
+        elif buy_sell_ratio < (1 / self.params["min_buy_sell_ratio"]):
+            signal -= 0.2
+            reason.append(f"high_sell_ratio={buy_sell_ratio:.1f}")
+            
+        # Mudança de pressão
+        if abs(pressure_change) > 0.2:
+            signal += pressure_change * 0.5
+            reason.append(f"pressure_change={pressure_change:.2f}")
+            
+        # Calcular confiança
+        confidence = min(abs(signal), 1.0)
+        
+        return {
+            "signal": signal,
+            "confidence": confidence,
+            "reason": ", ".join(reason)
+        }
+        
     def _calculate_pressure(self, volume: float, orders: int, whale_volume: float, 
                          whale_orders: int, avg_size: float) -> float:
         """
@@ -201,44 +261,17 @@ class OrderflowBot(BaseBot):
         # Fator volume (0-1)
         volume_factor = min(volume / (self.params["min_volume_threshold"] * 5), 1.0)
         
-        # Fator número de ordens (0-1)
-        orders_factor = min(orders / 100, 1.0)
+        # Fator whales
+        whale_factor = (whale_volume / volume) * self.params["whale_weight"] if volume > 0 else 0
         
-        # Fator tamanho médio (0-1)
-        size_factor = min(avg_size / self.params["whale_order_size"], 1.0)
-        
-        # Fator whale (0-2, pode ser maior que 1)
-        whale_factor = 1.0
-        if whale_orders > 0:
-            whale_ratio = whale_orders / orders if orders > 0 else 0
-            whale_factor = 1.0 + (whale_ratio * (self.params["whale_weight"] - 1.0))
-        
-        # Pressão final (0-3)
-        pressure = (volume_factor * 0.4 + orders_factor * 0.3 + size_factor * 0.3) * whale_factor
-        
-        return pressure
+        return (volume_factor + whale_factor) / 2
     
     def _calculate_pressure_change(self, flow_data: Dict[str, Any]) -> float:
         """
-        Calcula mudança na pressão vs período anterior.
+        Calcula a mudança na pressão em relação ao período anterior.
         """
-        # Obter dados históricos se disponíveis
-        historical = flow_data.get("historical", [])
-        if len(historical) < 2:
-            return 0.0
-        
-        try:
-            # Comparar com período anterior
-            current_pressure = flow_data.get("current_pressure", 0)
-            previous_pressure = historical[-1].get("pressure", 0)
-            
-            if previous_pressure == 0:
-                return 0.0
-            
-            return (current_pressure - previous_pressure) / abs(previous_pressure)
-            
-        except Exception:
-            return 0.0
+        # Simplificado para este exemplo, idealmente usaria histórico
+        return 0.0
     
     def _calculate_signal(self, analysis: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
         """

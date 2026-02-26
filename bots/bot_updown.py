@@ -9,7 +9,7 @@ Estratégia: momentum puro do preço do crypto nos últimos N candles.
 """
 
 import logging
-from strategies.base_bot import BaseBot
+from bots.base_bot import BaseBot
 import config
 
 logger = logging.getLogger(__name__)

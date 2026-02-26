@@ -46,6 +46,7 @@ class BaseBot(ABC):
         "sentiment": 0.50,      # neutral
         "hybrid": 0.50,         # neutral
         "orderflow": 0.50,
+        "updown": 0.52,         # momentum bias for short-term
     }
     # How aggressively each strategy trusts the market price signal
     MARKET_PRICE_AGGRESSION = {
@@ -56,6 +57,7 @@ class BaseBot(ABC):
         "sentiment": 1.0,       # neutral
         "hybrid": 1.0,          # neutral (was 0.9, contrarian loses)
         "orderflow": 1.0,
+        "updown": 1.2,          # aggressive
     }
     # Minimum confidence to place a trade (low = trades more, generates learning data)
     MIN_TRADE_CONFIDENCE = {
@@ -66,6 +68,7 @@ class BaseBot(ABC):
         "sentiment": 0.03,      # moderate
         "hybrid": 0.05,         # moderate-selective
         "orderflow": 0.05,
+        "updown": 0.01,         # high frequency attempt
     }
 
     def __init__(self, name, strategy_type, params, generation=0, lineage=None):
