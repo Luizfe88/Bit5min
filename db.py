@@ -30,6 +30,10 @@ def init_db():
                 outcome TEXT,
                 pnl REAL,
                 resolved_at TEXT,
+                sl_price REAL,
+                tp_price REAL,
+                current_sl REAL,
+                current_tp REAL,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -139,17 +143,46 @@ def get_conn():
 
 def log_trade(bot_name, market_id, side, amount, venue, mode, confidence=None,
               reasoning=None, market_question=None, trade_id=None, shares_bought=None,
-              trade_features=None):
+              trade_features=None, sl_price=None, tp_price=None):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO trades (bot_name, market_id, market_question, side, amount,
-               confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought,
+               sl_price, tp_price, current_sl, current_tp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (bot_name, market_id, market_question, side, amount,
              confidence, reasoning,
              json.dumps(trade_features) if trade_features else None,
-             venue, mode, trade_id, shares_bought)
+             venue, mode, trade_id, shares_bought,
+             sl_price, tp_price, sl_price, tp_price)
         )
+
+def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=None, current_tp=None):
+    """Updates SL/TP values for an existing trade."""
+    updates = []
+    params = []
+    
+    if sl_price is not None:
+        updates.append("sl_price=?")
+        params.append(sl_price)
+    if tp_price is not None:
+        updates.append("tp_price=?")
+        params.append(tp_price)
+    if current_sl is not None:
+        updates.append("current_sl=?")
+        params.append(current_sl)
+    if current_tp is not None:
+        updates.append("current_tp=?")
+        params.append(current_tp)
+        
+    if not updates:
+        return
+
+    params.append(trade_id)
+    query = f"UPDATE trades SET {', '.join(updates)} WHERE trade_id=?"
+    
+    with get_conn() as conn:
+        conn.execute(query, tuple(params))
 
 
 def resolve_trade(internal_id, outcome, pnl):

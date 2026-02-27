@@ -368,11 +368,44 @@ class BaseBot(ABC):
                 self._pause_reason = "daily_loss_limit"
             return {"success": False, "reason": reason}
 
+        # --- SL/TP Calculation (Centralized - Pre-Execution) ---
+        # Calcular SL/TP antes de executar para salvar no DB corretamente
+        sl_price = signal.get("sl_price")
+        tp_price = signal.get("tp_price")
+        
+        # 1. Tentar estimar preço de entrada para cálculo de SL/TP relativos
+        est_entry_price = current_price
+        if est_entry_price <= 0: est_entry_price = 0.5 # Fallback seguro
+
+        # TRAILING TP IMPLEMENTATION
+        if self.trailing_enabled:
+            # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
+            # Inicializamos ele com uma distância segura da entrada estimada
+            if tp_price is None and est_entry_price > 0:
+                tp_price = max(0.001, est_entry_price - self.trailing_distance)
+                
+            # Ainda podemos ter um SL fixo de emergência (ex: -25%)
+            if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
+                sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
+        
+        elif self.enable_sl_tp and sl_price is None and tp_price is None:
+            # Calculate based on estimated entry price if enabled and not provided by signal
+            if est_entry_price > 0:
+                # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.75 = 0.375 (-25%)
+                # Note: self.sl_pct is negative (e.g. -0.25)
+                calc_sl = est_entry_price * (1.0 + self.sl_pct)
+                # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
+                calc_tp = est_entry_price * (1.0 + self.tp_pct)
+                
+                # Safety bounds (0.001 - 0.999)
+                sl_price = max(0.001, min(0.999, calc_sl))
+                tp_price = max(0.001, min(0.999, calc_tp))
+
         try:
             if mode == "live":
-                result = self._execute_live(signal, market, amount, mode)
+                result = self._execute_live(signal, market, amount, mode, sl_price=sl_price, tp_price=tp_price)
             else:
-                result = self._execute_paper(signal, market, amount, venue, mode)
+                result = self._execute_paper(signal, market, amount, venue, mode, sl_price=sl_price, tp_price=tp_price)
 
             # --- Registrar Posição no RiskManager ---
             if result.get("success"):
@@ -549,7 +582,7 @@ class BaseBot(ABC):
             if telegram:
                 telegram.notify_bot_resumed(self.name)
 
-    def _execute_paper(self, signal, market, amount, venue, mode):
+    def _execute_paper(self, signal, market, amount, venue, mode, sl_price=None, tp_price=None):
         """Execute via Simmer (paper trading)."""
         import requests
         api_key = self._load_api_key()
@@ -584,6 +617,8 @@ class BaseBot(ABC):
                 trade_id=result.get("trade_id"),
                 shares_bought=result.get("shares_bought"),
                 trade_features=signal.get("features"),
+                sl_price=sl_price,
+                tp_price=tp_price
             )
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
             logger.info(f"[{self.name}] Paper trade: {signal['side']} ${amt_s} on {market.get('question', '')[:50]}")
@@ -596,7 +631,7 @@ class BaseBot(ABC):
             logger.error(f"[{self.name}] Paper trade failed: {resp.status_code} {resp.text[:200]}")
             return {"success": False, "reason": f"api_error_{resp.status_code}"}
 
-    def _execute_live(self, signal, market, amount, mode):
+    def _execute_live(self, signal, market, amount, mode, sl_price=None, tp_price=None):
         """Execute directly on Polymarket CLOB (live trading)."""
         import polymarket_client
 
@@ -629,6 +664,8 @@ class BaseBot(ABC):
                 reasoning=signal.get("reasoning"),
                 trade_id=result.get("order_id"),
                 shares_bought=result.get("size"),
+                sl_price=sl_price,
+                tp_price=tp_price
             )
             logger.info(f"[{self.name}] LIVE trade: {signal['side']} ${amount} at {result.get('price')} on {market.get('question', '')[:50]}")
             

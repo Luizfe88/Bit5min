@@ -658,21 +658,27 @@ async def get_open_positions():
             curr = 1.0 - raw_price
             
         # Extrair SL/TP
-        sl = None
-        tp = None
+        # Primeiro tenta pegar das colunas do DB (mais rápido/atualizado)
+        sl = t.get("current_sl") or t.get("sl_price")
+        tp = t.get("current_tp") or t.get("tp_price")
         trailing_enabled = False
         
+        # Se não tiver no DB, tenta do trade_features (retrocompatibilidade)
         try:
             feats = json.loads(t.get("trade_features") or "{}")
-            if "sl_price" in feats: sl = float(feats["sl_price"])
-            if "tp_price" in feats: tp = float(feats["tp_price"])
             if "trailing_enabled" in feats: trailing_enabled = bool(feats["trailing_enabled"])
             
-            # Fallback percentual
-            if sl is None and "sl_percent" in feats:
-                sl = entry * (1 + float(feats["sl_percent"])/100)
-            if tp is None and "tp_percent" in feats:
-                tp = entry * (1 + float(feats["tp_percent"])/100)
+            if sl is None:
+                if "sl_price" in feats: sl = float(feats["sl_price"])
+                # Fallback percentual
+                elif "sl_percent" in feats:
+                    sl = entry * (1 + float(feats["sl_percent"])/100)
+            
+            if tp is None:
+                if "tp_price" in feats: tp = float(feats["tp_price"])
+                # Fallback percentual
+                elif "tp_percent" in feats:
+                    tp = entry * (1 + float(feats["tp_percent"])/100)
         except:
             pass
 
