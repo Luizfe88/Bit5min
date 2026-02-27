@@ -41,36 +41,36 @@ class BaseBot(ABC):
     # Each strategy type gets different parameters for differentiation.
     # This creates real competition for evolution to select from.
     STRATEGY_PRIORS = {
-        "momentum": 0.52,       # slight YES bias — momentum tends bullish
-        "mean_reversion": 0.48, # slight NO bias — mean reversion bets against crowd
+        "momentum": 0.52,  # slight YES bias — momentum tends bullish
+        "mean_reversion": 0.48,  # slight NO bias — mean reversion bets against crowd
         "mean_reversion_sl": 0.48,
         "mean_reversion_tp": 0.48,
-        "sentiment": 0.50,      # neutral
-        "hybrid": 0.50,         # neutral
+        "sentiment": 0.50,  # neutral
+        "hybrid": 0.50,  # neutral
         "orderflow": 0.50,
-        "updown": 0.52,         # momentum bias for short-term
+        "updown": 0.52,  # momentum bias for short-term
     }
     # How aggressively each strategy trusts the market price signal
     MARKET_PRICE_AGGRESSION = {
-        "momentum": 1.2,        # follows market price strongly
-        "mean_reversion": 0.95, # nearly follows market (contrarian was -$16 loser)
+        "momentum": 1.2,  # follows market price strongly
+        "mean_reversion": 0.95,  # nearly follows market (contrarian was -$16 loser)
         "mean_reversion_sl": 0.95,
         "mean_reversion_tp": 0.95,
-        "sentiment": 1.0,       # neutral
-        "hybrid": 1.0,          # neutral (was 0.9, contrarian loses)
+        "sentiment": 1.0,  # neutral
+        "hybrid": 1.0,  # neutral (was 0.9, contrarian loses)
         "orderflow": 1.0,
-        "updown": 1.2,          # aggressive
+        "updown": 1.2,  # aggressive
     }
     # Minimum confidence to place a trade (low = trades more, generates learning data)
     MIN_TRADE_CONFIDENCE = {
-        "momentum": 0.01,       # trades almost everything (aggressive learner)
-        "mean_reversion": 0.06, # slightly selective
+        "momentum": 0.01,  # trades almost everything (aggressive learner)
+        "mean_reversion": 0.06,  # slightly selective
         "mean_reversion_sl": 0.06,
         "mean_reversion_tp": 0.06,
-        "sentiment": 0.03,      # moderate
-        "hybrid": 0.05,         # moderate-selective
+        "sentiment": 0.03,  # moderate
+        "hybrid": 0.05,  # moderate-selective
         "orderflow": 0.05,
-        "updown": 0.01,         # high frequency attempt
+        "updown": 0.01,  # high frequency attempt
     }
 
     def __init__(self, name, strategy_type, params, generation=0, lineage=None):
@@ -81,27 +81,27 @@ class BaseBot(ABC):
         self.lineage = lineage or name
         self._paused = False
         self._pause_reason = None
-        
+
         # --- Centralized SL/TP Configuration ---
         # Default disabled, check config.ENABLE_SL_TP_PER_BOT first
         self.enable_sl_tp = False
-        
+
         # 1. Check Global Config per Bot Name
         # Exact match or substring match for "meanrev" etc
         for key, enabled in config.ENABLE_SL_TP_PER_BOT.items():
             if key in name:
                 self.enable_sl_tp = enabled
                 break
-        
+
         # 2. Defaults from Config
         self.sl_pct = config.MEANREV_SL_PCT  # Default -25%
         self.tp_pct = config.MEANREV_TP_PCT  # Default +18%
 
         # 3. Override if class has specific attributes (e.g. MeanRevSLBot, MeanRevTPBot)
         if hasattr(self, "stop_loss_pct") and self.stop_loss_pct > 0:
-             self.sl_pct = -abs(self.stop_loss_pct)
+            self.sl_pct = -abs(self.stop_loss_pct)
         if hasattr(self, "take_profit_pct") and self.take_profit_pct > 0:
-             self.tp_pct = abs(self.take_profit_pct)
+            self.tp_pct = abs(self.take_profit_pct)
 
         # 4. Override if params has sl_pct or tp_pct
         if params:
@@ -233,7 +233,13 @@ class BaseBot(ABC):
                 "confidence": min(0.95, abs(p_yes - market_price) * 2.5),
                 "reasoning": f"No edge after costs: p_yes={p_yes:.3f} mkt={market_price:.3f} ev_yes={ev_yes:.2%} ev_no={ev_no:.2%}",
                 "suggested_amount": 0,
-                "features": {"x": x, "market_price": market_price, "p_yes": p_yes, "p_entry_yes": p_eff_yes, "p_entry_no": p_eff_no},
+                "features": {
+                    "x": x,
+                    "market_price": market_price,
+                    "p_yes": p_yes,
+                    "p_entry_yes": p_eff_yes,
+                    "p_entry_no": p_eff_no,
+                },
             }
 
         max_pos = config.get_max_position()
@@ -252,7 +258,13 @@ class BaseBot(ABC):
         )
 
         # Combine ML features with any custom trade features from analyze()
-        final_features = {"x": x, "market_price": market_price, "p_yes": p_yes, "p_entry_yes": p_eff_yes, "p_entry_no": p_eff_no}
+        final_features = {
+            "x": x,
+            "market_price": market_price,
+            "p_yes": p_yes,
+            "p_entry_yes": p_eff_yes,
+            "p_entry_no": p_eff_no,
+        }
         if raw_signal.get("trade_features"):
             final_features.update(raw_signal.get("trade_features"))
 
@@ -264,41 +276,52 @@ class BaseBot(ABC):
             "suggested_amount": float(amount),
             "features": final_features,
         }
-    
+
     def _fetch_market_price(self, market_id: str) -> float:
         """Fetch current market price directly from API (Retry Logic)."""
         import requests
         import time
+
         api_key = self._load_api_key()
         headers = {"Authorization": f"Bearer {api_key}"}
-        
+
         # FIX: Robust Price Fetching with Backoff
         for attempt in range(3):
             try:
                 resp = requests.get(
                     f"{config.SIMMER_BASE_URL}/api/sdk/markets/{market_id}",
-                    headers=headers, timeout=5
+                    headers=headers,
+                    timeout=5,
                 )
                 if resp.status_code == 200:
                     m_data = resp.json()
                     # Simmer returns 'current_price' as probability of YES
-                    price = float(m_data.get("current_price") or m_data.get("last_price") or m_data.get("mid_price") or 0.0)
+                    price = float(
+                        m_data.get("current_price")
+                        or m_data.get("last_price")
+                        or m_data.get("mid_price")
+                        or 0.0
+                    )
                     if 0 < price < 1.1:
                         return price
             except Exception as e:
-                logger.warning(f"[{self.name}] Price fetch attempt {attempt+1} failed: {e}")
-            
-            time.sleep(0.3 * (2 ** attempt)) # Backoff: 0.3, 0.6, 1.2
-        
+                logger.warning(
+                    f"[{self.name}] Price fetch attempt {attempt + 1} failed: {e}"
+                )
+
+            time.sleep(0.3 * (2**attempt))  # Backoff: 0.3, 0.6, 1.2
+
         # FIX: Abort trade if price fetch fails
         return 0.0
 
     # FIX: Hard price filter para mean-reversion segura
     def is_valid_entry_price(self, price: float, side: str) -> bool:
         if price < 0.18 or price > 0.82:
-            logger.warning(f"[PRICE FILTER] Preço {price:.3f} fora do range seguro 0.18-0.82. Abortando.")
+            logger.warning(
+                f"[PRICE FILTER] Preço {price:.3f} fora do range seguro 0.18-0.82. Abortando."
+            )
             return False
-        
+
         # Bonus: filtro assimétrico mais forte
         if side == "yes" and price > 0.75:
             logger.warning(f"[PRICE FILTER] YES a {price:.3f} muito alto. Abortando.")
@@ -306,7 +329,7 @@ class BaseBot(ABC):
         if side == "no" and price < 0.25:
             logger.warning(f"[PRICE FILTER] NO a {price:.3f} muito baixo. Abortando.")
             return False
-        
+
         return True
 
     def execute(self, signal: dict, market: dict) -> dict:
@@ -325,25 +348,38 @@ class BaseBot(ABC):
             reason_msg = f" ({self._pause_reason})" if self._pause_reason else ""
             logger.info(f"[{self.name}] Paused{reason_msg}, skipping trade")
             return {"success": False, "reason": "bot_paused"}
+        # Trust floor: ignore any signal with confidence lower than 55%
+        conf = signal.get("confidence", 0.0) or 0.0
+        try:
+            conf = float(conf)
+        except Exception:
+            conf = 0.0
+        if conf < 0.55:
+            logger.info(
+                f"[{self.name}] Signal ignored. Confiança muito baixa ({conf:.2f})"
+            )
+            return {"success": False, "reason": "low_confidence"}
         venue = config.get_venue()
         max_pos = config.get_max_position()
 
         # FIX: Market Lock Check
         m_id = market.get("id") or market.get("market_id")
         if m_id and market_lock.is_locked(m_id):
-            logger.info(f"[{self.name}] Market {m_id} is locked by other strategy. Skipping.")
+            logger.info(
+                f"[{self.name}] Market {m_id} is locked by other strategy. Skipping."
+            )
             return {"success": False, "reason": "market_locked"}
-            
+
         # FIX: Hard Price Filter
         current_price = market.get("current_price", 0.5)
         try:
-             current_price = float(current_price)
+            current_price = float(current_price)
         except:
-             current_price = 0.5
-        
+            current_price = 0.5
+
         side = signal.get("side", "yes")
         if not self.is_valid_entry_price(current_price, side):
-             return {"success": False, "reason": "price_filter_abort"}
+            return {"success": False, "reason": "price_filter_abort"}
 
         max_trades_hr = getattr(config, "MAX_TRADES_PER_HOUR_PER_BOT", None)
         if max_trades_hr is not None:
@@ -360,14 +396,12 @@ class BaseBot(ABC):
 
         # Check risk limits - NOVO SISTEMA CENTRALIZADO
         amount = min(signal.get("suggested_amount", max_pos * 0.5), max_pos)
-        
+
         # Usar o RiskManager centralizado
         allowed, reason = risk_manager.can_place_trade(
-            bot_name=self.name,
-            amount=amount,
-            market=market
+            bot_name=self.name, amount=amount, market=market
         )
-        
+
         if not allowed:
             # Se for daily_loss_per_bot, pausar o bot
             if reason == "daily_loss_per_bot":
@@ -379,10 +413,11 @@ class BaseBot(ABC):
         # Calcular SL/TP antes de executar para salvar no DB corretamente
         sl_price = signal.get("sl_price")
         tp_price = signal.get("tp_price")
-        
+
         # 1. Tentar estimar preço de entrada para cálculo de SL/TP relativos
         est_entry_price = current_price
-        if est_entry_price <= 0: est_entry_price = 0.5 # Fallback seguro
+        if est_entry_price <= 0:
+            est_entry_price = 0.5  # Fallback seguro
 
         # TRAILING TP IMPLEMENTATION
         if self.trailing_enabled:
@@ -390,24 +425,26 @@ class BaseBot(ABC):
             # Inicializamos ele com uma distância segura da entrada estimada
             if tp_price is None and est_entry_price > 0:
                 tp_price = max(0.001, est_entry_price - self.trailing_distance)
-                
+
             # Ainda podemos ter um SL fixo de emergência (ex: -25%)
             if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
                 sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
-        
+
         # TRAILING TP IMPLEMENTATION
         if self.trailing_enabled:
             # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
             # Inicializamos ele com uma distância segura da entrada estimada
             if tp_price is None and est_entry_price > 0:
                 tp_price = max(0.001, est_entry_price - self.trailing_distance)
-                
+
             # Ainda podemos ter um SL fixo de emergência (ex: -25%)
             if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
                 sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
-            
-            logger.info(f"[{self.name}] Trailing TP Init: Entry={est_entry_price:.3f}, Floor={tp_price:.3f}, Dist={self.trailing_distance:.3f}")
-        
+
+            logger.info(
+                f"[{self.name}] Trailing TP Init: Entry={est_entry_price:.3f}, Floor={tp_price:.3f}, Dist={self.trailing_distance:.3f}"
+            )
+
         elif self.enable_sl_tp and sl_price is None and tp_price is None:
             # Calculate based on estimated entry price if enabled and not provided by signal
             if est_entry_price > 0:
@@ -416,18 +453,30 @@ class BaseBot(ABC):
                 calc_sl = est_entry_price * (1.0 + self.sl_pct)
                 # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
                 calc_tp = est_entry_price * (1.0 + self.tp_pct)
-                
+
                 # Safety bounds (0.001 - 0.999)
                 sl_price = max(0.001, min(0.999, calc_sl))
                 tp_price = max(0.001, min(0.999, calc_tp))
-                
-                logger.info(f"[{self.name}] SL/TP Calculated: Entry={est_entry_price:.3f}, SL={sl_price:.3f} ({self.sl_pct:.0%}), TP={tp_price:.3f} ({self.tp_pct:.0%})")
+
+                logger.info(
+                    f"[{self.name}] SL/TP Calculated: Entry={est_entry_price:.3f}, SL={sl_price:.3f} ({self.sl_pct:.0%}), TP={tp_price:.3f} ({self.tp_pct:.0%})"
+                )
 
         try:
             if mode == "live":
-                result = self._execute_live(signal, market, amount, mode, sl_price=sl_price, tp_price=tp_price)
+                result = self._execute_live(
+                    signal, market, amount, mode, sl_price=sl_price, tp_price=tp_price
+                )
             else:
-                result = self._execute_paper(signal, market, amount, venue, mode, sl_price=sl_price, tp_price=tp_price)
+                result = self._execute_paper(
+                    signal,
+                    market,
+                    amount,
+                    venue,
+                    mode,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                )
 
             # --- Registrar Posição no RiskManager ---
             if result.get("success"):
@@ -439,76 +488,122 @@ class BaseBot(ABC):
                     from core.position import OpenPosition
                     import time
                     import uuid
-                    
-                    side = signal.get("side", "yes").lower()  # FIX: Safer access with default
+
+                    side = signal.get(
+                        "side", "yes"
+                    ).lower()  # FIX: Safer access with default
                     token_id = None
                     if side == "yes":
                         token_id = market.get("polymarket_token_id")
                     else:
                         token_id = market.get("polymarket_no_token_id")
-                    
+
                     # 1. Tentar pegar preço explícito do retorno da execução
-                    entry_price = float(result.get("price") or result.get("avgPrice") or 0)
-                    
+                    entry_price = float(
+                        result.get("price") or result.get("avgPrice") or 0
+                    )
+
                     # 2. Se falhar, tentar calcular via amount / shares
-                    shares = float(result.get("shares_bought") or result.get("size") or 0)
-                    
+                    shares = float(
+                        result.get("shares_bought") or result.get("size") or 0
+                    )
+
+                    # FIX: Fallback to calculate shares if size/shares_bought is missing but we have price
+                    if shares <= 0 and entry_price > 0 and amount > 0:
+                        shares = amount / entry_price
+                        logger.warning(
+                            f"[{self.name}] Shares missing but price found ({entry_price}). Calculated shares: {shares:.4f}"
+                        )
+
                     # FIX: Rigid Fill Validation
                     if shares <= 0:
-                        logger.error(f"[{self.name}] Trade executed but shares=0. Aborting position registration.")
+                        # Captura o preço atual da tela para análise de spread
+                        try:
+                            current_price_debug = (
+                                market.get("current_price", "N/A")
+                                if isinstance(market, dict)
+                                else market
+                            )
+                        except Exception:
+                            current_price_debug = "N/A"
+
+                        logger.error(
+                            f"[DEBUG SHARES=0] Bot: {getattr(self, 'name', 'Unknown')} | Side: {side} | Amount: ${amount} | Preço Tela: {current_price_debug} | Spread/Slippage consumiu a ordem inteira no mercado {m_id}"
+                        )
+                        logger.error(
+                            f"[{self.name}] Trade executed but shares=0. Response: {json.dumps(result)}"
+                        )
                         return {"success": False, "reason": "zero_shares_fill"}
 
                     if entry_price <= 0 and shares > 0:
-                         entry_price = amount / shares
-                    
+                        entry_price = amount / shares
+
                     # FIX: If calculated price is absurd (> 0.99), assume calculation failed and try fetch
                     if entry_price > 0.99:
-                         logger.warning(f"[{self.name}] Calculated price {entry_price:.3f} is invalid (>0.99). Shares: {shares}, Amount: {amount}")
-                         entry_price = 0 # Force fetch
+                        logger.warning(
+                            f"[{self.name}] Calculated price {entry_price:.3f} is invalid (>0.99). Shares: {shares}, Amount: {amount}"
+                        )
+                        entry_price = 0  # Force fetch
 
                     # 3. Retry Inteligente: Buscar na API se ainda inválido
                     if entry_price <= 0:
-                        logger.info(f"[{self.name}] Entry price missing. Fetching from API...")
+                        logger.info(
+                            f"[{self.name}] Entry price missing. Fetching from API..."
+                        )
                         p_yes = self._fetch_market_price(m_id)
                         if p_yes > 0:
                             entry_price = p_yes if side == "yes" else (1.0 - p_yes)
-                            logger.info(f"[{self.name}] Price recovered from API: {entry_price:.3f}")
+                            logger.info(
+                                f"[{self.name}] Price recovered from API: {entry_price:.3f}"
+                            )
                         else:
                             # FIX: Abort if price fetch fails
-                            logger.error(f"[{self.name}] Failed to resolve entry price. Aborting position registration.")
+                            logger.error(
+                                f"[{self.name}] Failed to resolve entry price. Aborting position registration."
+                            )
                             return {"success": False, "reason": "price_fetch_failed"}
 
                     # --- VALIDAÇÃO FORTE DE PREÇO ---
                     if not (0 < entry_price <= 0.99):
-                         logger.error(f"[{self.name}] Preço inválido ou fora do range (max 0.99): {entry_price:.3f} - abortando entrada")
-                         return {"success": False, "reason": "invalid_entry_price"}
+                        logger.error(
+                            f"[{self.name}] Preço inválido ou fora do range (max 0.99): {entry_price:.3f} - abortando entrada"
+                        )
+                        return {"success": False, "reason": "invalid_entry_price"}
 
                     # --- Trade ID Robusto ---
-                    trade_id = result.get("trade_id") or result.get("order_id") or result.get("id")
-                    
+                    trade_id = (
+                        result.get("trade_id")
+                        or result.get("order_id")
+                        or result.get("id")
+                    )
+
                     # Log Debug Completo para entender estrutura do response
                     if not trade_id:
-                        logger.warning(f"[DEBUG ORDER RESPONSE] {json.dumps(result, indent=2)}")
-                        
+                        logger.warning(
+                            f"[DEBUG ORDER RESPONSE] {json.dumps(result, indent=2)}"
+                        )
+
                     if not trade_id:
                         trade_id = f"temp_{uuid.uuid4().hex[:8]}"
-                        logger.warning(f"Trade ID ausente no retorno da execução para {self.name}. Usando ID temp: {trade_id}")
+                        logger.warning(
+                            f"Trade ID ausente no retorno da execução para {self.name}. Usando ID temp: {trade_id}"
+                        )
 
                     # --- SL/TP Calculation (Centralized) ---
                     sl_price = signal.get("sl_price")
                     tp_price = signal.get("tp_price")
-                    
+
                     # TRAILING TP IMPLEMENTATION
                     if self.trailing_enabled:
                         # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
                         # Inicializamos ele com uma distância segura da entrada
                         if tp_price is None and entry_price > 0:
                             tp_price = max(0.001, entry_price - self.trailing_distance)
-                            
+
                         # Ainda podemos ter um SL fixo de emergência (ex: -25%)
                         if sl_price is None and self.enable_sl_tp and entry_price > 0:
                             sl_price = max(0.001, entry_price * (1.0 + self.sl_pct))
-                    
+
                     elif self.enable_sl_tp and sl_price is None and tp_price is None:
                         # Calculate based on entry price if enabled and not provided by signal
                         if entry_price > 0:
@@ -517,7 +612,7 @@ class BaseBot(ABC):
                             calc_sl = entry_price * (1.0 + self.sl_pct)
                             # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
                             calc_tp = entry_price * (1.0 + self.tp_pct)
-                            
+
                             # Safety bounds (0.001 - 0.999)
                             sl_price = max(0.001, min(0.999, calc_sl))
                             tp_price = max(0.001, min(0.999, calc_tp))
@@ -536,9 +631,9 @@ class BaseBot(ABC):
                         shares=shares,
                         token_id=token_id,
                         # Trailing TP Configuration
-                        trailing_enabled=getattr(self, 'trailing_enabled', False),
-                        trailing_distance=getattr(self, 'trailing_distance', None),
-                        trailing_step=getattr(self, 'trailing_step', None)
+                        trailing_enabled=getattr(self, "trailing_enabled", False),
+                        trailing_distance=getattr(self, "trailing_distance", None),
+                        trailing_step=getattr(self, "trailing_step", None),
                     )
                     risk_manager.add_position(pos)
                 except Exception as pos_err:
@@ -579,7 +674,9 @@ class BaseBot(ABC):
 
         numeric_keys = [k for k, v in new_params.items() if isinstance(v, (int, float))]
         num_mutations = min(random.randint(2, 3), len(numeric_keys))
-        keys_to_mutate = random.sample(numeric_keys, num_mutations) if numeric_keys else []
+        keys_to_mutate = (
+            random.sample(numeric_keys, num_mutations) if numeric_keys else []
+        )
 
         for key in keys_to_mutate:
             val = new_params[key]
@@ -597,61 +694,78 @@ class BaseBot(ABC):
         was_paused = self._paused  # Check if bot was paused before
         self._paused = False
         self._pause_reason = None
-        
+
         # Send Telegram notification if bot was resumed
         if was_paused:
             telegram = get_telegram_notifier()
             if telegram:
                 telegram.notify_bot_resumed(self.name)
 
-    def _execute_paper(self, signal, market, amount, venue, mode, sl_price=None, tp_price=None):
-        """Execute via Simmer (paper trading)."""
-        import requests
-        api_key = self._load_api_key()
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    def _execute_paper(
+        self, signal, market, amount, venue, mode, sl_price=None, tp_price=None
+    ):
+        """Local paper execution: calculate shares and persist locally.
 
-        payload = {
-            "market_id": market.get("id") or market.get("market_id"),
-            "side": signal["side"],
-            "amount": amount,
-            "venue": venue,
-            "source": f"arena:{self.name}",
-            "reasoning": signal.get("reasoning", ""),
-        }
+        NOTE: This intentionally avoids placing any orders on Polymarket.
+        """
+        try:
+            market_id = market.get("id") or market.get("market_id")
 
-        resp = requests.post(
-            f"{config.SIMMER_BASE_URL}/api/sdk/trade",
-            headers=headers, json=payload, timeout=30
-        )
+            # Prefer market-provided price; fallback to API fetcher
+            price = None
+            try:
+                if market and market.get("current_price") is not None:
+                    price = float(market.get("current_price"))
+            except Exception:
+                price = None
 
-        if resp.status_code in (200, 201):
-            result = resp.json()
+            if price is None or price <= 0:
+                price = self._fetch_market_price(market_id)
+
+            if price is None or price <= 0:
+                logger.error(
+                    f"[{self.name}] Unable to determine market price for paper trade on {market_id}"
+                )
+                return {"success": False, "reason": "price_unavailable"}
+
+            shares = round(float(amount) / float(price), 6) if price > 0 else 0.0
+
+            # Persist trade locally in DB (no external order placed)
+            import uuid
+
+            trade_id = f"paper_{uuid.uuid4().hex[:8]}"
             db.log_trade(
                 bot_name=self.name,
-                market_id=market.get("id") or market.get("market_id"),
+                market_id=market_id,
                 market_question=market.get("question"),
                 side=signal["side"],
                 amount=amount,
-                venue=venue,
+                venue="local_paper",
                 mode=mode,
-                confidence=signal["confidence"],
+                confidence=signal.get("confidence"),
                 reasoning=signal.get("reasoning"),
-                trade_id=result.get("trade_id"),
-                shares_bought=result.get("shares_bought"),
+                trade_id=trade_id,
+                shares_bought=shares,
                 trade_features=signal.get("features"),
                 sl_price=sl_price,
-                tp_price=tp_price
+                tp_price=tp_price,
             )
+
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
-            logger.info(f"[{self.name}] Paper trade: {signal['side']} ${amt_s} on {market.get('question', '')[:50]}")
-            
-            # Retorna resultado completo para o RiskManager usar (shares, price, etc)
-            output = result.copy()
-            output["success"] = True
-            return output
-        else:
-            logger.error(f"[{self.name}] Paper trade failed: {resp.status_code} {resp.text[:200]}")
-            return {"success": False, "reason": f"api_error_{resp.status_code}"}
+            logger.info(
+                f"[{self.name}] Local PAPER trade saved: {signal['side']} ${amt_s} shares={shares} price={price:.4f} on {market.get('question', '')[:50]}"
+            )
+
+            return {
+                "success": True,
+                "trade_id": trade_id,
+                "shares_bought": shares,
+                "price": price,
+            }
+
+        except Exception as e:
+            logger.error(f"[{self.name}] Local paper trade failed: {e}")
+            return {"success": False, "reason": str(e)}
 
     def _execute_live(self, signal, market, amount, mode, sl_price=None, tp_price=None):
         """Execute directly on Polymarket CLOB (live trading)."""
@@ -664,7 +778,9 @@ class BaseBot(ABC):
             token_id = market.get("polymarket_no_token_id")
 
         if not token_id:
-            logger.error(f"[{self.name}] No token ID for side={side} on {market.get('question', '')[:50]}")
+            logger.error(
+                f"[{self.name}] No token ID for side={side} on {market.get('question', '')[:50]}"
+            )
             return {"success": False, "reason": "missing_token_id"}
 
         result = polymarket_client.place_market_order(
@@ -687,21 +803,26 @@ class BaseBot(ABC):
                 trade_id=result.get("order_id"),
                 shares_bought=result.get("size"),
                 sl_price=sl_price,
-                tp_price=tp_price
+                tp_price=tp_price,
             )
-            logger.info(f"[{self.name}] LIVE trade: {signal['side']} ${amount} at {result.get('price')} on {market.get('question', '')[:50]}")
-            
+            logger.info(
+                f"[{self.name}] LIVE trade: {signal['side']} ${amount} at {result.get('price')} on {market.get('question', '')[:50]}"
+            )
+
         else:
             logger.error(f"[{self.name}] LIVE trade failed: {result.get('error')}")
             # Send Telegram notification for failed trade
             telegram = get_telegram_notifier()
             if telegram:
-                telegram.notify_error(self.name, f"Trade failed: {result.get('error', 'Unknown error')}")
+                telegram.notify_error(
+                    self.name, f"Trade failed: {result.get('error', 'Unknown error')}"
+                )
 
         return result
 
     def _load_api_key(self):
         import json as _json
+
         # Try per-bot key first, then fall back to default
         try:
             with open(config.SIMMER_BOT_KEYS_PATH) as f:
@@ -709,7 +830,7 @@ class BaseBot(ABC):
             if self.name in bot_keys:
                 return bot_keys[self.name]
             # Check by slot assignment (for evolved bots inheriting a slot)
-            if hasattr(self, '_api_key_slot') and self._api_key_slot in bot_keys:
+            if hasattr(self, "_api_key_slot") and self._api_key_slot in bot_keys:
                 return bot_keys[self._api_key_slot]
         except (FileNotFoundError, json.JSONDecodeError):
             pass

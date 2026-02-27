@@ -72,6 +72,17 @@ def place_market_order(token_id: str, side: str, amount: float) -> dict:
         side: "yes" or "no"
         amount: USDC amount to spend
     """
+    # Safety: prevent accidental use of Polymarket client while in paper mode
+    try:
+        if config.get_current_mode() != "live":
+            logger.error(
+                "Attempted to place Polymarket order while not in live mode. Aborting."
+            )
+            return {"success": False, "error": "polymarket_called_in_non_live_mode"}
+    except Exception:
+        # If config lookup fails, proceed with caution below
+        pass
+
     try:
         client = get_client()
 

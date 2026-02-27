@@ -62,42 +62,37 @@ class BotEvolutionManager:
     def _load_state(self):
         """Carrega estado persistente do banco de dados"""
         try:
-            # Usa o mesmo sistema de estado que a arena
+            # Carrega timestamp da última evolução
             saved_last_evo = db.get_arena_state("last_evolution_time")
-            
-            # Verifica se é uma database nova (sem trades)
+            if saved_last_evo:
+                self.last_evolution_time = datetime.fromtimestamp(float(saved_last_evo))
+            else:
+                self.last_evolution_time = datetime.now()
+
+            # --- CORREÇÃO: Carrega contagem de trades do banco de dados ---
+            # Conta trades resolvidos APÓS a última evolução
             with db.get_conn() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM trades")
+                # Timestamp da última evolução para filtro
+                last_evo_ts = self.last_evolution_time.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Query: Trades resolvidos com resolved_at > last_evolution_time
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM trades 
+                    WHERE outcome IS NOT NULL 
+                    AND resolved_at > ?
+                """, (last_evo_ts,))
+                
                 trade_count = cursor.fetchone()[0]
+                self.global_trade_count = trade_count
                 
-                cursor.execute("SELECT COUNT(*) FROM evolution_events")
-                evolution_count = cursor.fetchone()[0]
-            
-            is_new_database = (trade_count == 0 and evolution_count == 0)
-            
-            if saved_last_evo and not is_new_database:
-                # Converte timestamp para datetime
-                self.last_evolution_time = datetime.fromtimestamp(float(saved_last_evo))
-                logger.info(f"📊 Estado carregado: última evolução: {self.last_evolution_time}")
-            else:
-                # Database nova ou sem histórico - inicia do zero
-                if is_new_database:
-                    self.last_evolution_time = datetime.now()  # Tempo atual = evolução disponível
-                    logger.info(f"📊 Database nova detectada ({trade_count} trades, {evolution_count} evoluções), iniciando do zero")
-                else:
-                    # Sem estado salvo mas tem histórico - usa safety net
-                    self.last_evolution_time = datetime.now() - timedelta(hours=5)  # 5h atrás
-                    logger.info(f"📊 Nenhum estado encontrado, iniciando com evolução disponível")
-                
-                # Salva o estado inicial
-                self._save_state()
+            logger.info(f"📊 Estado carregado: Última evolução {self.last_evolution_time}, Trades parciais: {self.global_trade_count}")
                 
         except Exception as e:
             logger.error(f"Erro ao carregar estado: {e}")
-            # Fallback: inicia com safety net ativada
-            self.last_evolution_time = datetime.now() - timedelta(hours=5)
-            self._save_state()  # Cria estado inicial
+            self.last_evolution_time = datetime.now()
+            self.global_trade_count = 0
     
     def _save_state(self):
         """Salva estado no banco de dados"""

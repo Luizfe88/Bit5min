@@ -33,11 +33,16 @@ from logging_config import setup_logging_with_brt
 from evolution_integration import evolution_integration, on_trade_resolved
 from bot_evolution_manager import BotEvolutionManager
 import telegram_bot
+import requests as _req
 
 logger = setup_logging_with_brt("arena", log_file=config.LOG_DIR / "trading-arena.log")
 
+# Wallet sync interval (seconds) - how often to refresh virtual bankroll from Simmer
+WALLET_SYNC_INTERVAL = getattr(config, "WALLET_SYNC_INTERVAL", 30)
+_last_wallet_sync = 0.0
+
 # Market check interval (seconds)
-TRADE_INTERVAL = 60    # Discover markets + place trades every 60s
+TRADE_INTERVAL = 60  # Discover markets + place trades every 60s
 FAST_POLL_INTERVAL = 0.5  # Poll market prices for SL/TP exits every 0.5s
 
 
@@ -50,11 +55,14 @@ def create_default_bots():
             # Prioriza configs mais recentes por geração e created_at
             active = sorted(
                 active,
-                key=lambda r: (int(r.get("generation", 0) or 0), str(r.get("created_at", ""))),
-                reverse=True
+                key=lambda r: (
+                    int(r.get("generation", 0) or 0),
+                    str(r.get("created_at", "")),
+                ),
+                reverse=True,
             )[:max_bots]
         except Exception:
-            active = active[:getattr(config, "NUM_BOTS", 5)]
+            active = active[: getattr(config, "NUM_BOTS", 5)]
         bot_classes = {
             "momentum": MomentumBot,
             "mean_reversion": MeanRevBot,
@@ -71,13 +79,16 @@ def create_default_bots():
             params = cfg["params"]
             if isinstance(params, str):
                 import json as _j
+
                 params = _j.loads(params)
-            bots.append(cls(
-                name=cfg["bot_name"],
-                params=params,
-                generation=cfg["generation"],
-                lineage=cfg.get("lineage"),
-            ))
+            bots.append(
+                cls(
+                    name=cfg["bot_name"],
+                    params=params,
+                    generation=cfg["generation"],
+                    lineage=cfg.get("lineage"),
+                )
+            )
         if bots:
             return bots
 
@@ -87,8 +98,56 @@ def create_default_bots():
         MeanRevBot(name="meanrev-v1", generation=0),
         MeanRevSLBot(name="meanrev-sl-v1", generation=0),
         OrderflowBot(name="orderflow-v1", generation=0),
-        UpDownBot(name="updown-rsi-v3", generation=0), # v3 RSI strategy
+        UpDownBot(name="updown-rsi-v3", generation=0),  # v3 RSI strategy
     ]
+
+
+def _load_simmer_api_keys():
+    keys = []
+    try:
+        data = json.load(open(config.SIMMER_API_KEY_PATH))
+        k = data.get("api_key")
+        if k:
+            keys.append(k)
+    except Exception:
+        pass
+
+    try:
+        if config.SIMMER_BOT_KEYS_PATH.exists():
+            bot_map = json.load(open(config.SIMMER_BOT_KEYS_PATH))
+            if isinstance(bot_map, dict):
+                for v in bot_map.values():
+                    if v:
+                        keys.append(v)
+    except Exception:
+        pass
+
+    uniq = []
+    seen = set()
+    for k in keys:
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(k)
+    return uniq
+
+
+def _fetch_simmer_balance(api_key: str):
+    headers = {"Authorization": f"Bearer {api_key}"}
+    resp = _req.get(
+        f"{config.SIMMER_BASE_URL}/api/sdk/agents/me", headers=headers, timeout=10
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Simmer agents/me failed: {resp.status_code} {resp.text[:200]}"
+        )
+    data = resp.json()
+    bal = data.get("balance")
+    try:
+        bal = float(bal)
+    except (TypeError, ValueError):
+        bal = None
+    return {"balance": bal, "raw": data}
 
 
 def create_evolved_bot(winner, loser_type, gen_number):
@@ -139,7 +198,7 @@ def create_evolved_bot(winner, loser_type, gen_number):
 
     # Mutate
     new_params = winner.mutate(base_params)
-    name = f"{loser_type}-g{gen_number}-{random.randint(100,999)}"
+    name = f"{loser_type}-g{gen_number}-{random.randint(100, 999)}"
 
     cls = bot_classes.get(loser_type, MomentumBot)
     return cls(
@@ -166,10 +225,10 @@ def _validate_bot(bot):
 def run_evolution(bots, cycle_number):
     """Run evolution cycle — select survivors, mutate replacements with sample-size guard."""
     logger.info(f"=== Evolution Cycle {cycle_number} ===")
-    
+
     # Passa bots ativos para o evolution manager
     evolution_integration.set_active_bots(bots)
-    
+
     # VERIFICA QUAL TIPO DE EVOLUÇÃO USAR
     if evolution_integration.should_run_regular_evolution():
         logger.info("=== Usando evolução regular (4h) ===")
@@ -201,25 +260,39 @@ def run_regular_evolution(bots, cycle_number):
         type_counts[t] = type_counts.get(t, 0) + 1
         penalty = diversity_penalty * max(0, type_counts[t] - 1) / max(1, len(bots))
         score -= penalty
-        db.save_generation_snapshot(bot.generation, bot.name, bot.strategy_type, win_rate, pnl, trades, bot.strategy_params)
-        rankings.append({
-            "name": bot.name,
-            "strategy_type": bot.strategy_type,
-            "generation": bot.generation,
-            "pnl": float(pnl),
-            "win_rate": float(win_rate),
-            "trades": int(trades),
-            "score": float(score),
-        })
+        db.save_generation_snapshot(
+            bot.generation,
+            bot.name,
+            bot.strategy_type,
+            win_rate,
+            pnl,
+            trades,
+            bot.strategy_params,
+        )
+        rankings.append(
+            {
+                "name": bot.name,
+                "strategy_type": bot.strategy_type,
+                "generation": bot.generation,
+                "pnl": float(pnl),
+                "win_rate": float(win_rate),
+                "trades": int(trades),
+                "score": float(score),
+            }
+        )
 
     rankings.sort(key=lambda x: x["score"], reverse=True)
     logger.info("Rankings:")
     for i, r in enumerate(rankings):
         status = "SURVIVES" if i < config.SURVIVORS_PER_CYCLE else "REPLACED"
-        logger.info(f"  #{i+1} {r['name']}: score={r['score']:+.2f} P&L=${r['pnl']:.2f}, WR={r['win_rate']:.1%}, Trades={r['trades']} [{status}]")
+        logger.info(
+            f"  #{i + 1} {r['name']}: score={r['score']:+.2f} P&L=${r['pnl']:.2f}, WR={r['win_rate']:.1%}, Trades={r['trades']} [{status}]"
+        )
 
     survivor_names = {rankings[i]["name"] for i in range(config.SURVIVORS_PER_CYCLE)}
-    replaced_names = {rankings[i]["name"] for i in range(config.SURVIVORS_PER_CYCLE, len(rankings))}
+    replaced_names = {
+        rankings[i]["name"] for i in range(config.SURVIVORS_PER_CYCLE, len(rankings))
+    }
 
     new_bots = []
     for bot in bots:
@@ -236,47 +309,67 @@ def run_regular_evolution(bots, cycle_number):
         evolved = create_evolved_bot(parent, dead_bot.strategy_type, cycle_number)
 
         # Inherit the dead bot's API key slot so evolved bot uses same Simmer account
-        if hasattr(dead_bot, '_api_key_slot'):
+        if hasattr(dead_bot, "_api_key_slot"):
             evolved._api_key_slot = dead_bot._api_key_slot
-            logger.info(f"  {evolved.name} inherits slot {dead_bot._api_key_slot} from {dead_bot.name}")
+            logger.info(
+                f"  {evolved.name} inherits slot {dead_bot._api_key_slot} from {dead_bot.name}"
+            )
 
         # Validate the new bot can actually trade before committing
         if not _validate_bot(evolved):
-            logger.warning(f"  {evolved.name} failed validation, recreating with pure defaults")
+            logger.warning(
+                f"  {evolved.name} failed validation, recreating with pure defaults"
+            )
             from bots.bot_momentum import DEFAULT_PARAMS as MOMENTUM_DEFAULTS
             from bots.bot_mean_rev import DEFAULT_PARAMS as MEANREV_DEFAULTS
             from bots.bot_hybrid import DEFAULT_PARAMS as HYBRID_DEFAULTS
             from bots.bot_sentiment import DEFAULT_PARAMS as SENTIMENT_DEFAULTS
             from bots.bot_orderflow import DEFAULT_PARAMS as ORDERFLOW_DEFAULTS
+
             fallback_map = {
-                "momentum": MOMENTUM_DEFAULTS, "mean_reversion": MEANREV_DEFAULTS,
-                "mean_reversion_sl": MEANREV_DEFAULTS, "mean_reversion_tp": MEANREV_DEFAULTS,
-                "sentiment": SENTIMENT_DEFAULTS, "hybrid": HYBRID_DEFAULTS,
+                "momentum": MOMENTUM_DEFAULTS,
+                "mean_reversion": MEANREV_DEFAULTS,
+                "mean_reversion_sl": MEANREV_DEFAULTS,
+                "mean_reversion_tp": MEANREV_DEFAULTS,
+                "sentiment": SENTIMENT_DEFAULTS,
+                "hybrid": HYBRID_DEFAULTS,
                 "orderflow": ORDERFLOW_DEFAULTS,
             }
             bot_classes = {
-                "momentum": MomentumBot, "mean_reversion": MeanRevBot,
-                "mean_reversion_sl": MeanRevSLBot, "mean_reversion_tp": MeanRevTPBot,
-                "sentiment": SentimentBot, "hybrid": HybridBot,
+                "momentum": MomentumBot,
+                "mean_reversion": MeanRevBot,
+                "mean_reversion_sl": MeanRevSLBot,
+                "mean_reversion_tp": MeanRevTPBot,
+                "sentiment": SentimentBot,
+                "hybrid": HybridBot,
                 "orderflow": OrderflowBot,
             }
             cls = bot_classes.get(dead_bot.strategy_type, MomentumBot)
-            fallback_params = fallback_map.get(dead_bot.strategy_type, MOMENTUM_DEFAULTS).copy()
+            fallback_params = fallback_map.get(
+                dead_bot.strategy_type, MOMENTUM_DEFAULTS
+            ).copy()
             evolved = cls(
-                name=evolved.name, params=fallback_params,
-                generation=cycle_number, lineage=f"{parent.name} -> {evolved.name} (fallback)",
+                name=evolved.name,
+                params=fallback_params,
+                generation=cycle_number,
+                lineage=f"{parent.name} -> {evolved.name} (fallback)",
             )
-            if hasattr(dead_bot, '_api_key_slot'):
+            if hasattr(dead_bot, "_api_key_slot"):
                 evolved._api_key_slot = dead_bot._api_key_slot
 
         db.retire_bot(dead_bot.name)
         db.save_bot_config(
-            evolved.name, evolved.strategy_type, evolved.generation,
-            evolved.strategy_params, evolved.lineage
+            evolved.name,
+            evolved.strategy_type,
+            evolved.generation,
+            evolved.strategy_params,
+            evolved.lineage,
         )
 
         new_bots.append(evolved)
-        logger.info(f"  Created {evolved.name} (from {parent.name}): {json.dumps(evolved.strategy_params)[:200]}")
+        logger.info(
+            f"  Created {evolved.name} (from {parent.name}): {json.dumps(evolved.strategy_params)[:200]}"
+        )
 
     # Log evolution event
     db.log_evolution(
@@ -289,8 +382,10 @@ def run_regular_evolution(bots, cycle_number):
 
     # Final validation: confirm all bots have API slots and can trade
     for bot in new_bots:
-        slot = getattr(bot, '_api_key_slot', None)
-        logger.info(f"  Post-evolution: {bot.name} ({bot.strategy_type}) slot={slot} params_keys={list(bot.strategy_params.keys())}")
+        slot = getattr(bot, "_api_key_slot", None)
+        logger.info(
+            f"  Post-evolution: {bot.name} ({bot.strategy_type}) slot={slot} params_keys={list(bot.strategy_params.keys())}"
+        )
 
     return new_bots
 
@@ -298,7 +393,7 @@ def run_regular_evolution(bots, cycle_number):
 def run_trade_based_evolution(bots, cycle_number):
     """Nova função que usa o sistema de evolução por trades"""
     logger.info("=== Trade-Based Evolution Cycle ===")
-    
+
     # Obtém rankings de performance das últimas 6 horas
     rankings = []
     for bot in bots:
@@ -308,90 +403,102 @@ def run_trade_based_evolution(bots, cycle_number):
             trades = perf.get("total_trades", 0)
             pnl = perf.get("total_pnl", 0)
             win_rate = perf.get("win_rate", 0)
-            
+
             # Calcula score ponderado (similar ao regular mas com peso menor)
             sample_weight = min(1.0, trades / 20)  # Peso baseado em trades
             score = (pnl * sample_weight) + ((win_rate - 0.5) * 2.0 * sample_weight)
-            
-            rankings.append({
-                "bot": bot,
-                "name": bot.name,
-                "strategy_type": bot.strategy_type,
-                "generation": bot.generation,
-                "pnl": pnl,
-                "win_rate": win_rate,
-                "trades": trades,
-                "score": score,
-            })
-            
-            logger.info(f"  {bot.name}: score={score:+.2f} P&L=${pnl:.2f}, WR={win_rate:.1%}, Trades={trades}")
-            
+
+            rankings.append(
+                {
+                    "bot": bot,
+                    "name": bot.name,
+                    "strategy_type": bot.strategy_type,
+                    "generation": bot.generation,
+                    "pnl": pnl,
+                    "win_rate": win_rate,
+                    "trades": trades,
+                    "score": score,
+                }
+            )
+
+            logger.info(
+                f"  {bot.name}: score={score:+.2f} P&L=${pnl:.2f}, WR={win_rate:.1%}, Trades={trades}"
+            )
+
         except Exception as e:
             logger.error(f"Erro ao analisar {bot.name}: {e}")
-            rankings.append({
-                "bot": bot,
-                "name": bot.name,
-                "strategy_type": bot.strategy_type,
-                "generation": bot.generation,
-                "pnl": 0,
-                "win_rate": 0,
-                "trades": 0,
-                "score": -999,
-            })
-    
+            rankings.append(
+                {
+                    "bot": bot,
+                    "name": bot.name,
+                    "strategy_type": bot.strategy_type,
+                    "generation": bot.generation,
+                    "pnl": 0,
+                    "win_rate": 0,
+                    "trades": 0,
+                    "score": -999,
+                }
+            )
+
     # Ordena por score decrescente
     rankings.sort(key=lambda x: x["score"], reverse=True)
-    
+
     # Seleciona sobreviventes (top 3 - mesma lógica do regular)
-    survivors_count = getattr(config, 'SURVIVORS_PER_CYCLE', 3)
+    survivors_count = getattr(config, "SURVIVORS_PER_CYCLE", 3)
     survivors = rankings[:survivors_count]
     survivor_names = {r["name"] for r in survivors}
     replaced = rankings[survivors_count:]
-    
+
     logger.info(f"🏆 Sobreviventes: {[s['name'] for s in survivors]}")
     logger.info(f"🔄 Substituídos: {[r['name'] for r in replaced]}")
-    
+
     # Mantém sobreviventes
     new_bots = []
     for rank in survivors:
         bot = rank["bot"]
         bot.reset_daily()
         new_bots.append(bot)
-    
+
     # Cria substitutos evoluídos
     for dead_rank in replaced:
         dead_bot = dead_rank["bot"]
-        
+
         # Seleciona parent (melhor performer entre sobreviventes)
         parent = survivors[0]["bot"]
-        
+
         # Cria bot evoluído usando função existente
         evolved = create_evolved_bot(parent, dead_bot.strategy_type, cycle_number)
-        
+
         # Herda slot de API do bot morto
-        if hasattr(dead_bot, '_api_key_slot'):
+        if hasattr(dead_bot, "_api_key_slot"):
             evolved._api_key_slot = dead_bot._api_key_slot
-            logger.info(f"  {evolved.name} herda slot {dead_bot._api_key_slot} de {dead_bot.name}")
-        
+            logger.info(
+                f"  {evolved.name} herda slot {dead_bot._api_key_slot} de {dead_bot.name}"
+            )
+
         # Valida novo bot com limite de tentativas
         max_retries = 3
         retry_count = 0
         while not _validate_bot(evolved) and retry_count < max_retries:
-            logger.warning(f"  {evolved.name} falhou validação (tentativa {retry_count + 1}/{max_retries}), recriando com defaults")
+            logger.warning(
+                f"  {evolved.name} falhou validação (tentativa {retry_count + 1}/{max_retries}), recriando com defaults"
+            )
             # Recria com parâmetros padrão se falhar
             evolved = create_evolved_bot(parent, dead_bot.strategy_type, cycle_number)
-            if hasattr(dead_bot, '_api_key_slot'):
+            if hasattr(dead_bot, "_api_key_slot"):
                 evolved._api_key_slot = dead_bot._api_key_slot
             retry_count += 1
-        
+
         # Se ainda falhar após todas as tentativas, usa um bot padrão simples
         if not _validate_bot(evolved):
-            logger.error(f"  {evolved.name} falhou validação após {max_retries} tentativas, criando bot padrão")
+            logger.error(
+                f"  {evolved.name} falhou validação após {max_retries} tentativas, criando bot padrão"
+            )
             # Cria um bot básico do mesmo tipo mas com parâmetros mínimos
             from bots.bot_momentum import DEFAULT_PARAMS as MOMENTUM_DEFAULTS
             from bots.bot_mean_rev import DEFAULT_PARAMS as MEANREV_DEFAULTS
             from bots.bot_hybrid import DEFAULT_PARAMS as HYBRID_DEFAULTS
-            
+
             default_params = {
                 "momentum": MOMENTUM_DEFAULTS,
                 "mean_reversion": MEANREV_DEFAULTS,
@@ -399,23 +506,26 @@ def run_trade_based_evolution(bots, cycle_number):
                 "mean_reversion_tp": MEANREV_DEFAULTS,
                 "hybrid": HYBRID_DEFAULTS,
             }.get(dead_bot.strategy_type, MOMENTUM_DEFAULTS)
-            
+
             # Cria bot com parâmetros mínimos
             evolved = create_evolved_bot(parent, dead_bot.strategy_type, cycle_number)
             evolved.strategy_params = default_params.copy()
-            if hasattr(dead_bot, '_api_key_slot'):
+            if hasattr(dead_bot, "_api_key_slot"):
                 evolved._api_key_slot = dead_bot._api_key_slot
-        
+
         # Registra mudanças no banco
         db.retire_bot(dead_bot.name)
         db.save_bot_config(
-            evolved.name, evolved.strategy_type, evolved.generation,
-            evolved.strategy_params, evolved.lineage
+            evolved.name,
+            evolved.strategy_type,
+            evolved.generation,
+            evolved.strategy_params,
+            evolved.lineage,
         )
-        
+
         new_bots.append(evolved)
         logger.info(f"  ⭐ Criado {evolved.name} (de {parent.name})")
-    
+
     # Registra evento de evolução com trigger reason
     db.log_evolution(
         cycle_number,
@@ -423,9 +533,9 @@ def run_trade_based_evolution(bots, cycle_number):
         [r["name"] for r in replaced],
         [b.name for b in new_bots if b.name not in survivor_names],
         rankings,
-        trigger_reason="trade_threshold"  # Indica que foi por trades
+        trigger_reason="trade_threshold",  # Indica que foi por trades
     )
-    
+
     logger.info(f"✅ Evolução por trades concluída")
     return new_bots
 
@@ -442,78 +552,135 @@ def load_api_key():
 def discover_markets(api_key):
     """Find active BTC, ETH, SOL, XRP 5-min up/down markets."""
     import requests
+
     markets = []
     crypto_found = {"btc": 0, "eth": 0, "sol": 0, "xrp": 0}
-    
+
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
         resp = requests.get(
             f"{config.SIMMER_BASE_URL}/api/sdk/markets",
             headers=headers,
-            params={"status": "active", "limit": 200},  # Increased limit for more markets
+            params={
+                "status": "active",
+                "limit": 200,
+            },  # Increased limit for more markets
             timeout=15,
         )
         if resp.status_code == 200:
             data = resp.json()
             markets_list = data if isinstance(data, list) else data.get("markets", [])
-            
+
             for m in markets_list:
                 q = m.get("question", "").lower()
                 has_5min = any(kw in q for kw in config.TARGET_MARKET_KEYWORDS)
-                
+
                 if has_5min:
+                    # skip markets with less than 1h remaining (prevent weak 5-min markets)
+                    end_ts = None
+                    # try resolves_at field first
+                    if m.get("resolves_at"):
+                        try:
+                            from datetime import datetime, timezone
+
+                            end_ts = datetime.fromisoformat(
+                                m.get("resolves_at").replace("Z", "+00:00")
+                            )
+                        except Exception:
+                            end_ts = None
+                    # fallback: attempt parse from question string
+                    if end_ts is None:
+                        try:
+                            # attempt to extract time substring and parse, robust but not perfect
+                            import re
+
+                            match = re.search(
+                                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+                                m.get("question", ""),
+                            )
+                            if match:
+                                end_ts = datetime.fromisoformat(match.group(0))
+                        except Exception:
+                            end_ts = None
+                    if end_ts is not None:
+                        from datetime import datetime, timezone
+
+                        try:
+                            nowdt = datetime.now(timezone.utc)
+                            time_to_end = (end_ts - nowdt).total_seconds()
+                        except Exception:
+                            time_to_end = None
+                        if time_to_end is not None and time_to_end < 3600:
+                            # too little life remaining, skip
+                            continue
                     # Check for Bitcoin/BTC
-                    has_btc = any(term in q for term in ["btc", "bitcoin", "bitcoin up or down"])
+                    has_btc = any(
+                        term in q for term in ["btc", "bitcoin", "bitcoin up or down"]
+                    )
                     if has_btc:
                         markets.append(m)
                         crypto_found["btc"] += 1
                         continue
-                    
+
                     # Check for Ethereum/ETH
-                    has_eth = any(term in q for term in ["eth", "ethereum", "ethereum up or down"])
+                    has_eth = any(
+                        term in q for term in ["eth", "ethereum", "ethereum up or down"]
+                    )
                     if has_eth:
                         markets.append(m)
                         crypto_found["eth"] += 1
                         continue
-                    
+
                     # Check for Solana/SOL
-                    has_sol = any(term in q for term in ["sol", "solana", "solana up or down"])
+                    has_sol = any(
+                        term in q for term in ["sol", "solana", "solana up or down"]
+                    )
                     if has_sol:
                         markets.append(m)
                         crypto_found["sol"] += 1
                         continue
 
                     # Check for Ripple/XRP
-                    has_xrp = any(term in q for term in ["xrp", "ripple", "ripple up or down"])
+                    has_xrp = any(
+                        term in q for term in ["xrp", "ripple", "ripple up or down"]
+                    )
                     if has_xrp:
                         markets.append(m)
                         crypto_found["xrp"] += 1
                         continue
-                        
+
     except Exception as e:
         logger.error(f"Market discovery error: {e}")
-    
-    logger.info(f"Discovered markets - BTC: {crypto_found['btc']}, ETH: {crypto_found['eth']}, SOL: {crypto_found['sol']}")
+
+    logger.info(
+        f"Discovered markets - BTC: {crypto_found['btc']}, ETH: {crypto_found['eth']}, SOL: {crypto_found['sol']}"
+    )
     return markets
 
 
 def is_5min_market(question):
     """Check if this is a strict 5-minute window market (not 15-min or hourly)."""
     import re
+
     q = question.lower()
     # Match patterns like "10:00PM-10:05PM" (5-min range)
-    range_match = re.search(r'(\d{1,2}):(\d{2})(am|pm)-(\d{1,2}):(\d{2})(am|pm)', q)
+    range_match = re.search(r"(\d{1,2}):(\d{2})(am|pm)-(\d{1,2}):(\d{2})(am|pm)", q)
     if range_match:
         h1, m1 = int(range_match.group(1)), int(range_match.group(2))
         h2, m2 = int(range_match.group(4)), int(range_match.group(5))
         ap1, ap2 = range_match.group(3), range_match.group(6)
         # Convert to 24h
-        if ap1 == 'pm' and h1 != 12: h1 += 12
-        if ap1 == 'am' and h1 == 12: h1 = 0
-        if ap2 == 'pm' and h2 != 12: h2 += 12
-        if ap2 == 'am' and h2 == 12: h2 = 0
+        if ap1 == "pm" and h1 != 12:
+            h1 += 12
+        if ap1 == "am" and h1 == 12:
+            h1 = 0
+        if ap2 == "pm" and h2 != 12:
+            h2 += 12
+        if ap2 == "am" and h2 == 12:
+            h2 = 0
         diff = (h2 * 60 + m2) - (h1 * 60 + m1)
-        if diff < 0: diff += 24 * 60
+        if diff < 0:
+            diff += 24 * 60
         return diff == 5
     return False
 
@@ -547,7 +714,11 @@ def _parse_resolves_at(value):
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         else:
             # Treat naive timestamps as UTC
-            dt = dt.replace(tzinfo=timezone.utc).astimezone(timezone.utc).replace(tzinfo=None)
+            dt = (
+                dt.replace(tzinfo=timezone.utc)
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+            )
         return dt
     except Exception:
         return None
@@ -639,10 +810,10 @@ def expire_stale_trades():
     These fell off Simmer's resolved API before we could check them.
     (Aumentado de 1h para 2h para evitar expirar trades com resolução lenta)"""
     with db.get_conn() as conn:
-        count = conn.execute('''
+        count = conn.execute("""
             UPDATE trades SET outcome = 'expired', pnl = 0, resolved_at = datetime('now')
             WHERE outcome IS NULL AND created_at < datetime('now', '-2 hours')
-        ''').rowcount
+        """).rowcount
     if count > 0:
         logger.info(f"Expired {count} stale trades (>2h old, never resolved)")
     return count
@@ -651,6 +822,7 @@ def expire_stale_trades():
 def resolve_trades(api_key):
     """Check Simmer for resolved markets and update trade outcomes."""
     import requests
+
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
 
@@ -723,7 +895,7 @@ def resolve_trades(api_key):
                 pnl = 0  # This bot voted but wasn't the executor
 
             db.resolve_trade(trade["id"], outcome, pnl)
-            
+
             # NOTIFICA SISTEMA DE EVOLUÇÃO sobre trade resolvido
             trade_result = {
                 "market_id": market_id,
@@ -731,7 +903,7 @@ def resolve_trades(api_key):
                 "outcome": outcome,
                 "pnl": pnl,
                 "shares": shares,
-                "won": won
+                "won": won,
             }
             on_trade_resolved(trade["bot_name"], trade_result)
 
@@ -756,7 +928,11 @@ def resolve_trades(api_key):
             try:
                 stored = trade["trade_features"]
                 payload = json.loads(stored) if stored else None
-                if isinstance(payload, dict) and isinstance(payload.get("x"), dict) and shares > 0:
+                if (
+                    isinstance(payload, dict)
+                    and isinstance(payload.get("x"), dict)
+                    and shares > 0
+                ):
                     mp = payload.get("market_price", market.get("current_price", 0.5))
                     try:
                         mp = float(mp)
@@ -770,7 +946,9 @@ def resolve_trades(api_key):
             count += 1
 
         if count > 0:
-            logger.info(f"Resolved {count} trades ({sum(1 for t in pending if resolved_map.get(t['market_id']))} pending matched {len(resolved_map)} resolved markets)")
+            logger.info(
+                f"Resolved {count} trades ({sum(1 for t in pending if resolved_map.get(t['market_id']))} pending matched {len(resolved_map)} resolved markets)"
+            )
         return count
 
     except Exception as e:
@@ -800,13 +978,13 @@ def assign_bot_slots(bots, bot_keys, default_key):
     # First pass: collect already-assigned slots
     used_slots = set()
     for bot in bots:
-        if hasattr(bot, '_api_key_slot') and bot._api_key_slot:
+        if hasattr(bot, "_api_key_slot") and bot._api_key_slot:
             used_slots.add(bot._api_key_slot)
 
     # Second pass: assign free slots to bots that don't have one
     free_slots = [s for s in all_slots if s not in used_slots]
     for bot in bots:
-        if not hasattr(bot, '_api_key_slot') or not bot._api_key_slot:
+        if not hasattr(bot, "_api_key_slot") or not bot._api_key_slot:
             if free_slots:
                 bot._api_key_slot = free_slots.pop(0)
             else:
@@ -830,7 +1008,9 @@ class PositionMonitorThread(threading.Thread):
 
     def run(self):
         """Main monitor loop — polls every FAST_POLL_INTERVAL."""
-        logger.info(f"Position monitor started (checking SL/TP every {FAST_POLL_INTERVAL}s)")
+        logger.info(
+            f"Position monitor started (checking SL/TP every {FAST_POLL_INTERVAL}s)"
+        )
 
         while not self._stop_event.is_set():
             try:
@@ -851,11 +1031,11 @@ class PositionMonitorThread(threading.Thread):
 
                     if exits:
                         logger.info(f"Monitor: Found {len(exits)} positions to close.")
-                        
+
                         # 3. Execute exits
                         for pos, reason, current_price in exits:
                             risk_manager.close_position(pos, reason, current_price)
-                
+
                 time.sleep(FAST_POLL_INTERVAL)
 
             except Exception as e:
@@ -865,6 +1045,7 @@ class PositionMonitorThread(threading.Thread):
     def _fetch_market_prices(self):
         """Fetch current prices for all active markets from Simmer."""
         import requests
+
         try:
             headers = {"Authorization": f"Bearer {self.api_key}"}
             resp = requests.get(
@@ -877,7 +1058,7 @@ class PositionMonitorThread(threading.Thread):
                 return {}
             data = resp.json()
             markets_list = data if isinstance(data, list) else data.get("markets", [])
-            
+
             # Map ID -> Data
             price_map = {}
             for m in markets_list:
@@ -887,7 +1068,6 @@ class PositionMonitorThread(threading.Thread):
             return price_map
         except Exception:
             return {}
-
 
 
 def main_loop(bots, api_key):
@@ -913,7 +1093,9 @@ def main_loop(bots, api_key):
     if saved_last_evo:
         last_evolution = float(saved_last_evo)
         elapsed = time.time() - last_evolution
-        logger.info(f"Restored evolution timer: cycle {cycle_number}, {elapsed/3600:.1f}h since last evolution")
+        logger.info(
+            f"Restored evolution timer: cycle {cycle_number}, {elapsed / 3600:.1f}h since last evolution"
+        )
     else:
         last_evolution = time.time()
         # Persist the initial start so it survives restarts before first evolution
@@ -930,7 +1112,9 @@ def main_loop(bots, api_key):
         ).fetchall()
         for r in recent:
             executed.add((r["bot_name"], r["market_id"]))
-    logger.info(f"Loaded {len(executed)} recent executed trade keys from DB (dedup across restarts)")
+    logger.info(
+        f"Loaded {len(executed)} recent executed trade keys from DB (dedup across restarts)"
+    )
 
     # Load per-bot API keys and assign slots
     bot_keys = load_bot_keys()
@@ -939,23 +1123,31 @@ def main_loop(bots, api_key):
     if multi_account:
         logger.info(f"Multi-account mode: {len(bot_keys)} Simmer accounts loaded")
     else:
-        logger.info(f"Single-account mode: {len(bot_keys)} bot keys found (need {config.NUM_BOTS} for independent trading)")
+        logger.info(
+            f"Single-account mode: {len(bot_keys)} bot keys found (need {config.NUM_BOTS} for independent trading)"
+        )
 
-    logger.info(f"Arena started with {len(bots)} bots in {config.get_current_mode()} mode")
-    
+    logger.info(
+        f"Arena started with {len(bots)} bots in {config.get_current_mode()} mode"
+    )
+
     # === Log de Configurações ===
     logger.info("=== Configurações Ativas ===")
-    logger.info(f"Janela de Mercado: {config.MARKET_FILTER['min_window_seconds']/3600:.1f}h a {config.MARKET_FILTER['max_window_seconds']/3600:.1f}h")
-    logger.info(f"Janela Fallback: > {config.MARKET_FILTER['fallback_min_seconds']/60:.0f} min (Se permitido)")
+    logger.info(
+        f"Janela de Mercado: {config.MARKET_FILTER['min_window_seconds'] / 3600:.1f}h a {config.MARKET_FILTER['max_window_seconds'] / 3600:.1f}h"
+    )
+    logger.info(
+        f"Janela Fallback: > {config.MARKET_FILTER['fallback_min_seconds'] / 60:.0f} min (Se permitido)"
+    )
     logger.info(f"Posição Padrão: {config.POSITION_SIZE_PCT:.1%} do bankroll")
     logger.info("============================")
-    
+
     # === Persist Bot Configs to DB on Startup ===
     try:
         logger.info(f"Bots em memória: {[b.name for b in bots]}")
         existing_bots = set(db.get_active_bot_names())
         logger.info(f"Bots já no DB: {list(existing_bots)}")
-        
+
         saved_count = 0
         for bot in bots:
             # Sempre tenta atualizar ou inserir para garantir que os parâmetros estejam sincronizados
@@ -969,20 +1161,22 @@ def main_loop(bots, api_key):
                         strategy_type=bot.strategy_type,
                         generation=bot.generation,
                         params=bot.strategy_params,
-                        lineage=bot.lineage
+                        lineage=bot.lineage,
                     )
-                    logger.info(f"Bot salvo no DB: {bot.name} ({bot.strategy_type}, gen={bot.generation})")
+                    logger.info(
+                        f"Bot salvo no DB: {bot.name} ({bot.strategy_type}, gen={bot.generation})"
+                    )
                     saved_count += 1
                 else:
                     logger.debug(f"Bot {bot.name} já existe no DB, pulando inserção.")
             except Exception as e:
                 logger.error(f"Erro ao salvar bot {bot.name} no DB: {e}")
-        
+
         if saved_count > 0:
             logger.info(f"{saved_count} bot(s) salvos no banco de dados.")
         else:
             logger.info("Nenhum novo bot precisou ser salvo no DB.")
-            
+
     except Exception as e:
         logger.error(f"Erro crítico ao persistir bots no DB: {e}")
 
@@ -992,11 +1186,15 @@ def main_loop(bots, api_key):
     # Inicializar RiskManager com a bankroll atual
     try:
         # Tentar obter bankroll do dashboard ou usar valor padrão
-        bankroll = float(db.get_arena_state("virtual_bankroll", config.PAPER_STARTING_BALANCE))
+        bankroll = float(
+            db.get_arena_state("virtual_bankroll", config.PAPER_STARTING_BALANCE)
+        )
         risk_manager.update_bankroll(bankroll)
         logger.info(f"RiskManager inicializado com bankroll: ${bankroll:.2f}")
     except Exception as e:
-        logger.warning(f"Não foi possível obter bankroll do dashboard, usando padrão: {e}")
+        logger.warning(
+            f"Não foi possível obter bankroll do dashboard, usando padrão: {e}"
+        )
         risk_manager.update_bankroll(config.PAPER_STARTING_BALANCE)
 
     # Timer para logs periódicos (15min)
@@ -1009,36 +1207,42 @@ def main_loop(bots, api_key):
             if time.time() - last_status_log > STATUS_LOG_INTERVAL:
                 try:
                     status = evolution_integration.get_evolution_status()
-                    current_trades = status.get('global_trade_count', 0)
-                    target_trades = status.get('target_trades', 100)
+                    current_trades = status.get("global_trade_count", 0)
+                    target_trades = status.get("target_trades", 100)
                     remaining = max(0, target_trades - current_trades)
-                    
+
                     # Usando cores se disponível (importado do risk_manager ou definido aqui)
                     # Como não temos Colors importado aqui, vamos usar log simples mas formatado
-                    logger.info("="*50)
+                    logger.info("=" * 50)
                     logger.info(f"🧬 STATUS DA EVOLUÇÃO")
-                    logger.info(f"📊 Trades Resolvidos: {current_trades}/{target_trades}")
+                    logger.info(
+                        f"📊 Trades Resolvidos: {current_trades}/{target_trades}"
+                    )
                     logger.info(f"⏳ Faltam: {remaining} trades para próxima evolução")
-                    
-                    if status.get('cooldown_active'):
+
+                    if status.get("cooldown_active"):
                         logger.info(f"🔒 Cooldown Ativo: Sim")
-                    
-                    logger.info("="*50)
+
+                    logger.info("=" * 50)
                     last_status_log = time.time()
                 except Exception as e:
                     logger.warning(f"Erro ao logar status de evolução: {e}")
 
             # === REGISTRA BOTS ATIVOS PARA EVOLUÇÃO ===
             evolution_integration.set_active_bots(bots)
-            
+
             # === EVOLUTION CHECK (agora com guarda de volume mínimo) ===
             total_resolved = 0
             with db.get_conn() as conn:
-                row = conn.execute("SELECT COUNT(*) FROM trades WHERE resolved_at IS NOT NULL AND created_at >= datetime('now', ?)", 
-                                   (f'-{config.EVOLUTION_INTERVAL_HOURS} hours',)).fetchone()
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE resolved_at IS NOT NULL AND created_at >= datetime('now', ?)",
+                    (f"-{config.EVOLUTION_INTERVAL_HOURS} hours",),
+                ).fetchone()
                 total_resolved = row[0] if row else 0
 
-            if (time.time() - last_evolution >= evolution_interval) and (total_resolved >= config.EVOLUTION_MIN_RESOLVED_TRADES):
+            if (time.time() - last_evolution >= evolution_interval) and (
+                total_resolved >= config.EVOLUTION_MIN_RESOLVED_TRADES
+            ):
                 cycle_number += 1
                 bots = run_evolution(bots, cycle_number)
                 last_evolution = time.time()
@@ -1046,22 +1250,26 @@ def main_loop(bots, api_key):
                 db.set_arena_state("evolution_cycle", str(cycle_number))
                 db.set_arena_state("last_evolution_time", str(last_evolution))
                 skip_cache.clear()
-                
+
                 # Reset daily losses and resume trading after evolution
-                logger.info(f"Resetting daily losses and resuming bots after evolution cycle {cycle_number}")
+                logger.info(
+                    f"Resetting daily losses and resuming bots after evolution cycle {cycle_number}"
+                )
                 db.reset_arena_day(mode=config.get_current_mode())
                 # Reset do RiskManager também
                 risk_manager.reset_daily()
-                
+
                 # Ensure all bots are unpaused and ready to trade
                 for bot in bots:
                     bot.reset_daily()
                     logger.info(f"Bot {bot.name} resumed trading after evolution")
-                
+
                 # Re-assign slots — new bots inherit the killed bot's slot index
                 assign_bot_slots(bots, bot_keys, api_key)
             elif time.time() - last_evolution >= evolution_interval:
-                logger.info(f"Waiting for enough data... only {total_resolved}/{config.EVOLUTION_MIN_RESOLVED_TRADES} trades resolved")
+                logger.info(
+                    f"Waiting for enough data... only {total_resolved}/{config.EVOLUTION_MIN_RESOLVED_TRADES} trades resolved"
+                )
 
             # Resolve completed trades (check all accounts)
             if multi_account:
@@ -1070,9 +1278,53 @@ def main_loop(bots, api_key):
             else:
                 resolve_trades(api_key)
 
+            # === Wallet Sync: periodically fetch Simmer balances and update RiskManager ===
+            try:
+                now = time.time()
+                if now - _last_wallet_sync > WALLET_SYNC_INTERVAL:
+                    _last_wallet_sync = now
+                    if config.get_current_mode() == "paper":
+                        keys = _load_simmer_api_keys()
+                        if keys:
+                            total = 0.0
+                            for k in keys:
+                                try:
+                                    info = _fetch_simmer_balance(k)
+                                    bal = info.get("balance")
+                                    if bal is not None:
+                                        total += float(bal)
+                                except Exception as be:
+                                    logger.warning(
+                                        f"Wallet fetch failed for a key: {be}"
+                                    )
+
+                            # Persist and update RiskManager only if we obtained a valid total
+                            if total > 0:
+                                # Store in DB for shared visibility
+                                try:
+                                    db.set_arena_state("virtual_bankroll", str(total))
+                                except Exception:
+                                    logger.debug(
+                                        "Failed to persist virtual_bankroll to DB"
+                                    )
+                                try:
+                                    risk_manager.update_bankroll(total)
+                                    logger.info(
+                                        f"RiskManager bankroll synced from Simmer: ${total:.2f}"
+                                    )
+                                except Exception as re:
+                                    logger.warning(
+                                        f"Failed to update RiskManager bankroll: {re}"
+                                    )
+                        else:
+                            logger.debug("No Simmer API keys found for wallet sync")
+
+            except Exception as e:
+                logger.debug(f"Wallet sync error: {e}")
+
             # Clean up stale trades that fell off the resolved API
             expire_stale_trades()
-            
+
             # VERIFICA SE SISTEMA DE EVOLUÇÃO POR TRADES PRECISA EXECUTAR
             # (agora com bots ativos registrados)
             evolution_integration.check_and_trigger_evolution_if_needed()
@@ -1109,7 +1361,11 @@ def main_loop(bots, api_key):
                     if max_tte is None or tte > max_tte:
                         max_tte = tte
                         latest_close = close_dt
-                    if config.TRADE_MIN_TTE_SECONDS <= tte <= config.TRADE_MAX_TTE_SECONDS:
+                    if (
+                        config.TRADE_MIN_TTE_SECONDS
+                        <= tte
+                        <= config.TRADE_MAX_TTE_SECONDS
+                    ):
                         in_window += 1
 
                 sample = (markets[0].get("question") or "")[:120] if markets else ""
@@ -1129,7 +1385,9 @@ def main_loop(bots, api_key):
                     )
                 time.sleep(30)
                 continue
-            logger.info(f"Trading on {len(five_min_markets)} markets this cycle (of {len(markets)} discovered)")
+            logger.info(
+                f"Trading on {len(five_min_markets)} markets this cycle (of {len(markets)} discovered)"
+            )
 
             # Gather signals for multiple crypto markets
             # Detect crypto type from market question
@@ -1143,16 +1401,16 @@ def main_loop(bots, api_key):
                     return "xrp"
                 else:
                     return "btc"  # Default to BTC
-            
+
             # Get signals for each crypto type found in markets
             crypto_types = set()
             for market in five_min_markets:
                 crypto_types.add(get_crypto_type(market.get("question", "")))
-            
+
             # Collect signals for all crypto types
             all_price_signals = {}
             all_sent_signals = {}
-            
+
             for crypto in crypto_types:
                 price_signals = price_feed.get_signals(crypto)
                 sent_signals = sentiment_feed.get_signals(crypto)
@@ -1165,11 +1423,13 @@ def main_loop(bots, api_key):
             skip_reasons = {}
             now_ts = time.time()
             if skip_cache:
-                skip_cache = {k: v for k, v in skip_cache.items() if (now_ts - v) < skip_retry}
+                skip_cache = {
+                    k: v for k, v in skip_cache.items() if (now_ts - v) < skip_retry
+                }
             for market in five_min_markets:
                 market_id = market.get("id") or market.get("market_id")
                 of_signals = orderflow_feed.get_signals(market_id, api_key)
-                
+
                 # Get crypto type for this market and use appropriate signals
                 crypto_type = get_crypto_type(market.get("question", ""))
                 price_signals = all_price_signals.get(crypto_type, {})
@@ -1204,10 +1464,14 @@ def main_loop(bots, api_key):
                             new_trades += 1
                             amt = float(signal.get("suggested_amount") or 0.0)
                             amt_s = f"{amt:.4f}" if amt < 0.01 else f"{amt:.2f}"
-                            logger.info(f"[{bot.name}] {signal['side'].upper()} ${amt_s} (conf={signal['confidence']:.2f}) on {market.get('question', '')[:50]}")
+                            logger.info(
+                                f"[{bot.name}] {signal['side'].upper()} ${amt_s} (conf={signal['confidence']:.2f}) on {market.get('question', '')[:50]}"
+                            )
                         else:
                             skip_cache[key] = now_ts
-                            logger.debug(f"[{bot.name}] Trade failed on {market_id}: {result.get('reason')}")
+                            logger.debug(
+                                f"[{bot.name}] Trade failed on {market_id}: {result.get('reason')}"
+                            )
                     except Exception as e:
                         logger.error(f"[{bot.name}] Error on {market_id}: {e}")
                         skip_cache[key] = now_ts
@@ -1217,9 +1481,13 @@ def main_loop(bots, api_key):
             else:
                 top = sorted(skip_reasons.items(), key=lambda x: x[1], reverse=True)[:2]
                 if top:
-                    logger.info(f"No trades placed this cycle (decisions={decide_count}, skips={skip_count}, top_skip='{top[0][0]}')")
+                    logger.info(
+                        f"No trades placed this cycle (decisions={decide_count}, skips={skip_count}, top_skip='{top[0][0]}')"
+                    )
                 else:
-                    logger.info(f"No trades placed this cycle (decisions={decide_count}, skips={skip_count})")
+                    logger.info(
+                        f"No trades placed this cycle (decisions={decide_count}, skips={skip_count})"
+                    )
 
             time.sleep(TRADE_INTERVAL)
 
@@ -1233,14 +1501,22 @@ def main_loop(bots, api_key):
 
 def main():
     parser = argparse.ArgumentParser(description="Polymarket Bot Arena")
-    parser.add_argument("--mode", choices=["paper", "live"], default=None,
-                        help="Trading mode (default: from config)")
-    parser.add_argument("--setup", action="store_true", help="Run setup verification first")
+    parser.add_argument(
+        "--mode",
+        choices=["paper", "live"],
+        default=None,
+        help="Trading mode (default: from config)",
+    )
+    parser.add_argument(
+        "--setup", action="store_true", help="Run setup verification first"
+    )
     args = parser.parse_args()
 
     if args.mode:
         if args.mode == "live":
-            confirm = input("You are switching to LIVE trading with real USDC. Type YES to confirm: ")
+            confirm = input(
+                "You are switching to LIVE trading with real USDC. Type YES to confirm: "
+            )
             if confirm.strip() != "YES":
                 print("Cancelled. Staying in paper mode.")
                 sys.exit(0)
@@ -1249,6 +1525,7 @@ def main():
 
     if args.setup:
         import setup
+
         if not setup.main():
             sys.exit(1)
 
