@@ -12,6 +12,10 @@ DEFAULT_PARAMS = {
     "min_confidence": 0.55,
     "sentiment_momentum_weight": 0.6,
     "raw_sentiment_weight": 0.4,
+    # Trailing TP Configuration (Tendência de Médio Prazo)
+    "trailing_enabled": True,
+    "trailing_distance": 0.06,  # 6% de espaço para volatilidade social
+    "trailing_step": 0.02,
 }
 
 

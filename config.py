@@ -150,10 +150,10 @@ ENABLE_SL_TP_PER_BOT = {
     "meanrev-sl-v1": True,
     "meanrev-tp-v1": True,
     "hybrid-v1": True,
-    "momentum-v1": False,
-    "updown-rsi-v3": False,
-    "sentiment-v1": False,
-    "orderflow-v1": False
+    "momentum-v1": True,
+    "updown-rsi-v3": True,
+    "sentiment-v1": True,
+    "orderflow-v1": True
 }
 
 # Risk Config for Specific Bots (UpDown v3)

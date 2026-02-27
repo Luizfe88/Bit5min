@@ -103,6 +103,13 @@ class BaseBot(ABC):
         if hasattr(self, "take_profit_pct") and self.take_profit_pct > 0:
              self.tp_pct = abs(self.take_profit_pct)
 
+        # 4. Override if params has sl_pct or tp_pct
+        if params:
+            if "sl_pct" in params:
+                self.sl_pct = -abs(float(params["sl_pct"]))
+            if "tp_pct" in params:
+                self.tp_pct = abs(float(params["tp_pct"]))
+
         # --- Trailing TP Configuration ---
         # Carrega do strategy_params se disponível, senão usa defaults
         self.trailing_enabled = self.strategy_params.get("trailing_enabled", False)
@@ -388,6 +395,19 @@ class BaseBot(ABC):
             if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
                 sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
         
+        # TRAILING TP IMPLEMENTATION
+        if self.trailing_enabled:
+            # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
+            # Inicializamos ele com uma distância segura da entrada estimada
+            if tp_price is None and est_entry_price > 0:
+                tp_price = max(0.001, est_entry_price - self.trailing_distance)
+                
+            # Ainda podemos ter um SL fixo de emergência (ex: -25%)
+            if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
+                sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
+            
+            logger.info(f"[{self.name}] Trailing TP Init: Entry={est_entry_price:.3f}, Floor={tp_price:.3f}, Dist={self.trailing_distance:.3f}")
+        
         elif self.enable_sl_tp and sl_price is None and tp_price is None:
             # Calculate based on estimated entry price if enabled and not provided by signal
             if est_entry_price > 0:
@@ -400,6 +420,8 @@ class BaseBot(ABC):
                 # Safety bounds (0.001 - 0.999)
                 sl_price = max(0.001, min(0.999, calc_sl))
                 tp_price = max(0.001, min(0.999, calc_tp))
+                
+                logger.info(f"[{self.name}] SL/TP Calculated: Entry={est_entry_price:.3f}, SL={sl_price:.3f} ({self.sl_pct:.0%}), TP={tp_price:.3f} ({self.tp_pct:.0%})")
 
         try:
             if mode == "live":

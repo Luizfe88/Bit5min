@@ -635,15 +635,16 @@ def is_5min_market_obj(market: dict) -> bool:
 
 
 def expire_stale_trades():
-    """Expire trades for 5-min markets that are >1h old and never resolved.
-    These fell off Simmer's resolved API before we could check them."""
+    """Expire trades for 5-min markets that are >2h old and never resolved.
+    These fell off Simmer's resolved API before we could check them.
+    (Aumentado de 1h para 2h para evitar expirar trades com resolução lenta)"""
     with db.get_conn() as conn:
         count = conn.execute('''
             UPDATE trades SET outcome = 'expired', pnl = 0, resolved_at = datetime('now')
-            WHERE outcome IS NULL AND created_at < datetime('now', '-1 hour')
+            WHERE outcome IS NULL AND created_at < datetime('now', '-2 hours')
         ''').rowcount
     if count > 0:
-        logger.info(f"Expired {count} stale trades (>1h old, never resolved)")
+        logger.info(f"Expired {count} stale trades (>2h old, never resolved)")
     return count
 
 

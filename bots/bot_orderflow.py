@@ -26,6 +26,10 @@ DEFAULT_PARAMS = {
     "max_hold_time": 4,
     "stop_loss_pct": 0.08,
     "take_profit_pct": 0.12,
+    # Trailing TP Configuration (Scalping Rápido)
+    "trailing_enabled": True,
+    "trailing_distance": 0.03,  # 3% de distância (apertado para scalping)
+    "trailing_step": 0.01,      # Atualiza a cada 1% de lucro
 }
 
 class OrderflowBot(BaseBot):
