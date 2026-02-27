@@ -296,7 +296,7 @@ async def get_wallet():
 @app.get("/", response_class=HTMLResponse)
 async def index():
     html_path = Path(__file__).parent / "index.html"
-    return html_path.read_text()
+    return html_path.read_text(encoding="utf-8")
 
 
 @app.get("/api/status")
@@ -610,6 +610,101 @@ async def get_learning():
         name = bot_cfg["bot_name"]
         result[name] = learning.get_bot_learning_summary(name)
     return JSONResponse(result)
+
+
+@app.get("/api/open_positions")
+async def get_open_positions():
+    """Retorna posições abertas com preço atual, TP/SL + % de distância e dados para highlight"""
+    mode = config.get_current_mode()
+    positions = []
+    
+    # 1. Obter preços atuais (usando a mesma lógica do código anterior para buscar preços da Simmer)
+    price_map = {}
+    try:
+        api_key = json.load(open(config.SIMMER_API_KEY_PATH))["api_key"]
+        markets = _fetch_simmer_markets(api_key, limit=200)
+        for m in markets:
+            if "id" in m and "current_price" in m:
+                try:
+                    price_map[m["id"]] = float(m["current_price"])
+                except:
+                    pass
+    except Exception as e:
+        print(f"Erro buscando preços: {e}")
+
+    # 2. Buscar trades abertos do DB (usando DB em vez de risk_manager.open_positions pois o dashboard roda em processo separado)
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE outcome IS NULL AND mode=?",
+            (mode,)
+        ).fetchall()
+
+    for r in rows:
+        t = dict(r)
+        
+        # Dados básicos
+        market_id = t.get("market_id")
+        shares = float(t.get("shares_bought") or 0)
+        amount = float(t.get("amount") or 0)
+        entry = amount / shares if shares > 0 else 0
+        side = t.get("side", "").upper()
+        
+        # Determinar Preço Atual
+        raw_price = price_map.get(market_id)
+        curr = raw_price
+        
+        # Ajuste de preço para Short (NO)
+        if side == "NO" and raw_price is not None:
+            curr = 1.0 - raw_price
+            
+        # Extrair SL/TP
+        sl = None
+        tp = None
+        trailing_enabled = False
+        
+        try:
+            feats = json.loads(t.get("trade_features") or "{}")
+            if "sl_price" in feats: sl = float(feats["sl_price"])
+            if "tp_price" in feats: tp = float(feats["tp_price"])
+            if "trailing_enabled" in feats: trailing_enabled = bool(feats["trailing_enabled"])
+            
+            # Fallback percentual
+            if sl is None and "sl_percent" in feats:
+                sl = entry * (1 + float(feats["sl_percent"])/100)
+            if tp is None and "tp_percent" in feats:
+                tp = entry * (1 + float(feats["tp_percent"])/100)
+        except:
+            pass
+
+        # Cálculo de distância %
+        tp_dist = sl_dist = None
+        tp_display = sl_display = "—"
+
+        if tp and curr:
+            tp_dist = (tp - curr) / curr * 100
+            tp_display = f"{tp:.4f} ({'+' if tp_dist >= 0 else ''}{tp_dist:.2f}%)"
+        if sl and curr:
+            sl_dist = (curr - sl) / curr * 100
+            sl_display = f"{sl:.4f} ({'' if sl_dist >= 0 else ''}{sl_dist:.2f}%)"
+
+        positions.append({
+            "trade_id": t.get("trade_id") or str(t.get("id")),
+            "bot_name": t.get("bot_name", "unknown"),
+            "market": t.get("market_question", "Bitcoin Up or Down..."),
+            "side": side,
+            "entry": round(entry, 4),
+            "current": round(curr, 4) if curr else None,
+            "sl_price": sl,
+            "tp_price": tp,
+            "tp_display": tp_display,
+            "sl_display": sl_display,
+            "tp_dist": round(tp_dist, 2) if tp_dist is not None else None,
+            "sl_dist": round(sl_dist, 2) if sl_dist is not None else None,
+            "size_usd": round(amount, 2),
+            "trailing": "✅" if trailing_enabled else "❌"
+        })
+
+    return {"positions": positions}
 
 
 if __name__ == "__main__":

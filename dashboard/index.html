@@ -54,6 +54,11 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
 .market-timer.warning { color: #f0883e; }
 .market-timer.normal { color: #3fb950; }
 .market-price { color: #8b949e; font-size: 12px; margin-left: 16px; min-width: 60px; text-align: right; }
+/* Highlight classes */
+.row-tp-near { background-color: rgba(0, 204, 136, 0.15) !important; }
+.row-sl-near { background-color: rgba(255, 68, 68, 0.15) !important; }
+.tp-text { color: #00cc88; font-weight: bold; }
+.sl-text { color: #ff4444; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -128,12 +133,28 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
         </table>
     </div>
 
-    <!-- Open Positions -->
+<!-- Open Positions -->
     <div class="section-title">Open Positions</div>
-    <div class="card">
-        <table id="open-positions-table">
-            <thead><tr><th>Bot</th><th>Market</th><th>Side</th><th>Invested</th><th>Opened</th><th>Closes At</th></tr></thead>
-            <tbody></tbody>
+    <div class="card overflow-x-auto">
+        <table id="open-positions-table" class="min-w-full bg-zinc-900 text-white text-sm">
+            <thead>
+                <tr class="bg-zinc-800">
+                    <th class="px-4 py-3 text-left">Bot</th>
+                    <th class="px-4 py-3 text-left">Market</th>
+                    <th class="px-4 py-3 text-center">Side</th>
+                    <th class="px-4 py-3 text-right">Entry</th>
+                    <th class="px-4 py-3 text-right">Current</th>
+                    <th class="px-4 py-3 text-right">SL</th>
+                    <th class="px-4 py-3 text-right">TP</th>
+                    <th class="px-4 py-3 text-right">Dist. TP</th>
+                    <th class="px-4 py-3 text-right">Dist. SL</th>
+                    <th class="px-4 py-3 text-right">Size USD</th>
+                    <th class="px-4 py-3 text-center">Trailing</th>
+                </tr>
+            </thead>
+            <tbody id="open-positions-body" class="text-zinc-300">
+                <!-- JS vai preencher aqui -->
+            </tbody>
         </table>
     </div>
 
@@ -308,31 +329,42 @@ function updateTrades(trades) {
     `).join('');
 }
 
-function updateOpenPositions(positions) {
-    const tbody = document.querySelector('#open-positions-table tbody');
-    if (!Array.isArray(positions)) {
-        tbody.innerHTML = '';
-        return;
-    }
-    tbody.innerHTML = positions.map(p => {
-        let riskHtml = '-';
-        if (p.risk_analysis) {
-            const sl = p.risk_analysis.sl_trigger || '-';
-            const tp = p.risk_analysis.tp_target || '-';
-            riskHtml = `<span style="font-size:11px; color:#8b949e;">SL: ${sl}<br>TP: ${tp}</span>`;
-        }
-        return `
-        <tr>
-            <td>${p.bot_name}</td>
-            <td>${(p.market_question || '').slice(0, 40)}</td>
-            <td>${p.side}</td>
-            <td>$${p.invested || '0.00'}</td>
-            <td>${riskHtml}</td>
-            <td>${fmtTradeTime(p.open_time)}</td>
-            <td>${p.expected_close_time || '-'}</td>
-        </tr>
-    `}).join('');
+async function loadOpenPositions() {
+    const res = await fetch('/api/open_positions');
+    const data = await res.json();
+    
+    const tbody = document.getElementById('open-positions-body');
+    tbody.innerHTML = '';
+  
+    const positions = data.positions || [];
+    positions.forEach(p => {
+      const isNearTP = p.tp_dist !== null && p.tp_dist < 3;
+      const isNearSL = p.sl_dist !== null && p.sl_dist < 2;
+  
+      const rowClass = isNearTP ? 'bg-green-900/30' : isNearSL ? 'bg-red-900/30' : '';
+  
+      const tr = document.createElement('tr');
+      tr.className = `hover:bg-zinc-800 ${rowClass}`;
+      tr.innerHTML = `
+        <td class="px-4 py-3">${p.bot_name}</td>
+        <td class="px-4 py-3">${p.market}</td>
+        <td class="px-4 py-3 text-center font-bold ${p.side === 'YES' ? 'text-green-400' : 'text-red-400'}">${p.side}</td>
+        <td class="px-4 py-3 text-right">${p.entry}</td>
+        <td class="px-4 py-3 text-right font-mono">${p.current || '—'}</td>
+        <td class="px-4 py-3 text-right text-red-400 font-bold">${p.sl_display}</td>
+        <td class="px-4 py-3 text-right text-emerald-400 font-bold">${p.tp_display}</td>
+        <td class="px-4 py-3 text-right ${p.tp_dist !== null && p.tp_dist > 0 ? 'text-emerald-400' : 'text-zinc-400'}">${p.tp_dist !== null ? p.tp_dist + '%' : '—'}</td>
+        <td class="px-4 py-3 text-right ${p.sl_dist !== null && p.sl_dist > 0 ? 'text-red-400' : 'text-zinc-400'}">${p.sl_dist !== null ? p.sl_dist + '%' : '—'}</td>
+        <td class="px-4 py-3 text-right">$${p.size_usd}</td>
+        <td class="px-4 py-3 text-center">${p.trailing}</td>
+      `;
+      tbody.appendChild(tr);
+    });
 }
+
+// Atualiza a cada 3 segundos
+setInterval(loadOpenPositions, 3000);
+loadOpenPositions();   // primeira carga
 
 function updateEarnings(data) {
     const daily = data.daily || [];
@@ -574,13 +606,12 @@ function updateWallet(w) {
 
 async function refresh() {
     // Fetch all concurrently but handle failures individually via fetchJSON defaultVal
-    const [status, overview, bots, evolution, trades, openPositions, earnings, wallet] = await Promise.all([
+    const [status, overview, bots, evolution, trades, earnings, wallet] = await Promise.all([
         fetchJSON('/api/status', {mode: 'paper'}),
         fetchJSON('/api/overview', {stats: {today:{}, week:{}, all_time:{}}}),
         fetchJSON('/api/bots', []),
         fetchJSON('/api/evolution', []),
         fetchJSON('/api/trades?limit=20', []),
-        fetchJSON('/api/open-positions', []),
         fetchJSON('/api/earnings', {daily:[]}),
         fetchJSON('/api/wallet', {error: 'Fetch failed'}),
     ]);
@@ -591,7 +622,6 @@ async function refresh() {
     if (Array.isArray(bots)) updateBots(bots);
     if (Array.isArray(evolution)) updateEvolution(evolution);
     if (Array.isArray(trades)) updateTrades(trades);
-    if (Array.isArray(openPositions)) updateOpenPositions(openPositions);
     if (earnings) updateEarnings(earnings);
 
     // Refresh market data alongside other data
