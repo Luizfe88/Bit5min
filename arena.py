@@ -617,6 +617,28 @@ def discover_markets(api_key):
                     has_btc = any(
                         term in q for term in ["btc", "bitcoin", "bitcoin up or down"]
                     )
+                    # Liquidity filter: only reject if liquidity field exists and is below threshold
+                    liq_field = m.get("liquidity")
+                    if liq_field is not None:
+                        try:
+                            liquidity = float(liq_field)
+                        except Exception:
+                            liquidity = 0
+                        if liquidity < config.MARKET_FILTER.get("min_liquidity_usd", 0):
+                            continue
+
+                    # Spread filter: if best_bid/best_ask provided, enforce max spread from aggression
+                    try:
+                        bb = float(m.get("best_bid") or 0)
+                        ba = float(m.get("best_ask") or 0)
+                        if bb > 0 and ba > 0:
+                            mid_price = (bb + ba) / 2
+                            spread_pct = (ba - bb) / mid_price * 100
+                            if spread_pct > config.get_max_spread_allowed():
+                                continue
+                    except Exception:
+                        pass
+
                     if has_btc:
                         markets.append(m)
                         crypto_found["btc"] += 1
@@ -806,16 +828,24 @@ def is_5min_market_obj(market: dict) -> bool:
 
 
 def expire_stale_trades():
-    """Expire trades for 5-min markets that are >2h old and never resolved.
-    These fell off Simmer's resolved API before we could check them.
-    (Aumentado de 1h para 2h para evitar expirar trades com resolução lenta)"""
+    """Expire trades that are stale (adaptive):
+    - If resolved trades in last 24h < 80 => expire trades older than 1 hour
+    - Else expire trades older than 2 hours
+    This prevents stale trades from clogging queue during low-data regimes.
+    """
+    try:
+        resolved = db.get_global_resolved_trades_count(hours=24)
+    except Exception:
+        resolved = 0
+
+    expiry_hours = 1 if resolved < 80 else 2
     with db.get_conn() as conn:
-        count = conn.execute("""
+        count = conn.execute(f"""
             UPDATE trades SET outcome = 'expired', pnl = 0, resolved_at = datetime('now')
-            WHERE outcome IS NULL AND created_at < datetime('now', '-2 hours')
+            WHERE outcome IS NULL AND created_at < datetime('now', '-{expiry_hours} hours')
         """).rowcount
     if count > 0:
-        logger.info(f"Expired {count} stale trades (>2h old, never resolved)")
+        logger.info(f"Expired {count} stale trades (older than {expiry_hours}h)")
     return count
 
 
@@ -1133,6 +1163,23 @@ def main_loop(bots, api_key):
 
     # === Log de Configurações ===
     logger.info("=== Configurações Ativas ===")
+    # Log aggression mode clearly
+    try:
+        agg = (
+            config.get_aggression_level()
+            if hasattr(config, "get_aggression_level")
+            else "medium"
+        )
+        if agg == "aggressive":
+            logger.info(
+                "🔴 MODO AGGRESSIVE ATIVO - MIN_CONFIDENCE=0.48, MIN_EDGE=0.12%, TRADES MÁXIMOS=150+/dia"
+            )
+        else:
+            logger.info(
+                f"Modo: {agg.title()} - MIN_CONFIDENCE={config.get_min_confidence() if hasattr(config, 'get_min_confidence') else 0.55:.2f}"
+            )
+    except Exception:
+        pass
     logger.info(
         f"Janela de Mercado: {config.MARKET_FILTER['min_window_seconds'] / 3600:.1f}h a {config.MARKET_FILTER['max_window_seconds'] / 3600:.1f}h"
     )
@@ -1239,6 +1286,16 @@ def main_loop(bots, api_key):
                     (f"-{config.EVOLUTION_INTERVAL_HOURS} hours",),
                 ).fetchone()
                 total_resolved = row[0] if row else 0
+
+            # Dynamic skip retry: reduce cooldown while we have limited resolved trades
+            try:
+                base_skip = getattr(config, "SKIP_RETRY_SECONDS", 45) or 45
+                if total_resolved < 80:
+                    skip_retry = max(10, int(base_skip / 2))
+                else:
+                    skip_retry = base_skip
+            except Exception:
+                skip_retry = getattr(config, "SKIP_RETRY_SECONDS", 45) or 45
 
             if (time.time() - last_evolution >= evolution_interval) and (
                 total_resolved >= config.EVOLUTION_MIN_RESOLVED_TRADES

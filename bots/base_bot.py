@@ -219,19 +219,42 @@ class BaseBot(ABC):
         p_eff_yes = max(0.01, min(0.99, p_buy_yes * (1.0 + fee_rate)))
         p_eff_no = max(0.01, min(0.99, p_buy_no * (1.0 + fee_rate)))
 
-        ev_yes = (p_yes - p_eff_yes) / p_eff_yes
-        ev_no = ((1.0 - p_yes) - p_eff_no) / p_eff_no
+        # Helper: calculate effective edge after fees (transparent helper)
+        def calculate_real_edge_after_fees(p_yes, market_price, p_eff_yes, p_eff_no):
+            ev_yes = (p_yes - p_eff_yes) / max(1e-9, p_eff_yes)
+            ev_no = ((1.0 - p_yes) - p_eff_no) / max(1e-9, p_eff_no)
+            side = "yes" if ev_yes >= ev_no else "no"
+            best_ev = ev_yes if side == "yes" else ev_no
+            return ev_yes, ev_no, best_ev, side
 
-        side = "yes" if ev_yes >= ev_no else "no"
-        best_ev = ev_yes if side == "yes" else ev_no
+        ev_yes, ev_no, best_ev, side = calculate_real_edge_after_fees(
+            p_yes, market_price, p_eff_yes, p_eff_no
+        )
 
-        min_ev = getattr(config, "MIN_EXPECTED_VALUE", 0.0)
+        # Dynamic minimum edge based on configured aggression
+        min_ev = config.get_min_edge_after_fees()
+        # Log & return skip if edge below threshold
         if best_ev < float(min_ev):
+            # compute spread percent if available
+            spread_pct = None
+            try:
+                bb = float(market.get("best_bid") or 0)
+                ba = float(market.get("best_ask") or 0)
+                if bb > 0 and ba > 0:
+                    mid = (bb + ba) / 2
+                    spread_pct = (ba - bb) / mid * 100
+            except Exception:
+                spread_pct = None
+
+            reason_text = f"No edge after costs: p_yes={p_yes:.3f} mkt={market_price:.3f} ev_yes={ev_yes:.2%} ev_no={ev_no:.2%}"
+            logger.info(
+                f"[{self.name}] SKIP: {reason_text} | min_ev={min_ev:.4f} | spread_pct={spread_pct if spread_pct is not None else 'N/A'}"
+            )
             return {
                 "action": "skip",
                 "side": side,
                 "confidence": min(0.95, abs(p_yes - market_price) * 2.5),
-                "reasoning": f"No edge after costs: p_yes={p_yes:.3f} mkt={market_price:.3f} ev_yes={ev_yes:.2%} ev_no={ev_no:.2%}",
+                "reasoning": reason_text,
                 "suggested_amount": 0,
                 "features": {
                     "x": x,
@@ -267,6 +290,28 @@ class BaseBot(ABC):
         }
         if raw_signal.get("trade_features"):
             final_features.update(raw_signal.get("trade_features"))
+
+        # Dynamic position sizing: boost when very confident
+        try:
+            conf_float = float(confidence)
+        except Exception:
+            conf_float = 0.0
+
+        if conf_float >= 0.82:
+            # scale factor between 1.5 and 2.0 influenced by aggression level
+            agg_lvl = (
+                config.get_aggression_level()
+                if hasattr(config, "get_aggression_level")
+                else "medium"
+            )
+            if agg_lvl == "aggressive":
+                mult = 2.0
+            elif agg_lvl == "medium":
+                mult = 1.65
+            else:
+                mult = 1.5
+            amount = amount * mult
+            reasoning = f"[SIZE x{mult:.2f}] " + reasoning
 
         return {
             "action": "buy",
@@ -332,6 +377,70 @@ class BaseBot(ABC):
 
         return True
 
+    def calculate_position_size(
+        self, confidence: float, current_exposure: float, total_capital: float
+    ) -> float:
+        """
+        Calculate dynamic position size based on confidence level with global exposure cap.
+
+        Higher confidence = more aggressive position sizing
+        Global cap prevents over-leveraging across all open positions
+
+        Args:
+            confidence: Signal confidence (0.0-1.0), higher = more aggressive
+            current_exposure: Current total open position value across all bots ($)
+            total_capital: Total available capital ($)
+
+        Returns:
+            Position size in dollars (rounded to 2 decimals)
+            Min: MIN_TRADE_SIZE ($5)
+            Max: 50% of capital - current_exposure
+
+        Logic:
+            1. Get confidence tier multiplier (0.90→2.8, 0.80→2.2, etc.)
+            2. base_size = 8% * total_capital
+            3. desired_size = base_size * multiplier
+            4. Respect global 50% cap: max_allowed = 50% * capital - current_exposure
+            5. final_size = min(desired_size, max_allowed)
+            6. Enforce minimum: final_size = max(final_size, $5)
+        """
+        # Get confidence-based multiplier
+        multiplier = config.get_confidence_multiplier(confidence)
+
+        # Calculate desired position size
+        base_size = config.get_base_position_percent() * total_capital
+        desired_size = base_size * multiplier
+
+        # Global exposure cap: 50% of capital
+        max_global = config.get_max_total_exposure() * total_capital
+        max_allowed = max(0.0, max_global - current_exposure)
+
+        # Apply cap
+        final_size = min(desired_size, max_allowed)
+
+        # Enforce minimum trade size
+        min_size = config.get_min_trade_size()
+        final_size = max(final_size, min_size)
+
+        # Round to 2 decimals
+        final_size = round(final_size, 2)
+
+        # Calculate total exposure percentage for logging
+        total_exposure_pct = (
+            (current_exposure + final_size) * 100 / total_capital
+            if total_capital > 0
+            else 0
+        )
+
+        # Log-friendly string with all details
+        logger.debug(
+            f"[{self.name}] Position Sizing: conf={confidence:.2f} → multiplier={multiplier:.2f} → "
+            f"desired=${desired_size:.2f} → final=${final_size:.2f} "
+            f"(total_exposure={total_exposure_pct:.1f}% of capital)"
+        )
+
+        return final_size
+
     def execute(self, signal: dict, market: dict) -> dict:
         """Place a trade via Simmer SDK based on the signal."""
         mode = config.get_current_mode()
@@ -348,15 +457,20 @@ class BaseBot(ABC):
             reason_msg = f" ({self._pause_reason})" if self._pause_reason else ""
             logger.info(f"[{self.name}] Paused{reason_msg}, skipping trade")
             return {"success": False, "reason": "bot_paused"}
-        # Trust floor: ignore any signal with confidence lower than 55%
+        # Trust floor: ignore any signal with confidence lower than configured min
         conf = signal.get("confidence", 0.0) or 0.0
         try:
             conf = float(conf)
         except Exception:
             conf = 0.0
-        if conf < 0.55:
+        min_conf = (
+            config.get_min_confidence()
+            if hasattr(config, "get_min_confidence")
+            else 0.55
+        )
+        if conf < float(min_conf):
             logger.info(
-                f"[{self.name}] Signal ignored. Confiança muito baixa ({conf:.2f})"
+                f"[{self.name}] Signal ignored. Confiança muito baixa ({conf:.2f}) < min_conf={min_conf:.2f}"
             )
             return {"success": False, "reason": "low_confidence"}
         venue = config.get_venue()
@@ -381,7 +495,11 @@ class BaseBot(ABC):
         if not self.is_valid_entry_price(current_price, side):
             return {"success": False, "reason": "price_filter_abort"}
 
-        max_trades_hr = getattr(config, "MAX_TRADES_PER_HOUR_PER_BOT", None)
+        max_trades_hr = (
+            config.get_max_trades_per_hour_per_bot()
+            if hasattr(config, "get_max_trades_per_hour_per_bot")
+            else getattr(config, "MAX_TRADES_PER_HOUR_PER_BOT", None)
+        )
         if max_trades_hr is not None:
             try:
                 with db.get_conn() as conn:
@@ -390,12 +508,42 @@ class BaseBot(ABC):
                         (self.name, mode),
                     ).fetchone()
                 if row and int(dict(row)["c"]) >= int(max_trades_hr):
+                    logger.info(
+                        f"[{self.name}] Hourly trade cap reached ({dict(row)['c']} >= {max_trades_hr}) - enforcing rate limit"
+                    )
                     return {"success": False, "reason": "trade_rate_limit"}
             except Exception:
                 pass
 
-        # Check risk limits - NOVO SISTEMA CENTRALIZADO
-        amount = min(signal.get("suggested_amount", max_pos * 0.5), max_pos)
+        # ===== DYNAMIC CONFIDENCE-BASED POSITION SIZING (NEW) =====
+        # Get current total exposure and total capital for sizing calculation
+        try:
+            total_capital = (
+                config.PAPER_STARTING_BALANCE
+                if mode == "paper"
+                else config.LIVE_STARTING_BALANCE
+            )
+        except:
+            total_capital = 10000.0  # Fallback
+
+        try:
+            # Get current total exposure across all open positions
+            current_exposure = db.get_total_open_position_value_all_bots(mode)
+        except:
+            current_exposure = 0.0  # Fallback
+
+        # Calculate position size based on confidence level
+        amount = self.calculate_position_size(conf, current_exposure, total_capital)
+
+        # If calculated position is below minimum, skip trade
+        if amount < config.get_min_trade_size():
+            logger.info(
+                f"[{self.name}] Position too small (${amount:.2f} < min ${config.get_min_trade_size():.2f}). Skipping."
+            )
+            return {"success": False, "reason": "position_below_minimum"}
+
+        # Ensure not exceeding max position limits (keep existing safeguards)
+        amount = min(amount, max_pos)
 
         # Usar o RiskManager centralizado
         allowed, reason = risk_manager.can_place_trade(
@@ -403,6 +551,9 @@ class BaseBot(ABC):
         )
 
         if not allowed:
+            logger.info(
+                f"[{self.name}] RiskManager denied trade: reason={reason} amount={amount} market_id={m_id}"
+            )
             # Se for daily_loss_per_bot, pausar o bot
             if reason == "daily_loss_per_bot":
                 self._paused = True

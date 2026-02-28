@@ -36,9 +36,21 @@ class HybridBot(BaseBot):
         mom_signal = self._momentum.analyze(market, signals)
         mr_signal = self._mean_rev.analyze(market, signals)
 
+        # Allow dynamic extra weight to mean_rev when it's highly confident
+        mr_w = self.strategy_params.get("mean_rev_weight", 0.5)
+        try:
+            if (
+                mr_signal
+                and mr_signal.get("action") != "hold"
+                and float(mr_signal.get("confidence", 0)) >= 0.75
+            ):
+                mr_w = min(1.0, mr_w + 0.15)
+        except Exception:
+            pass
+
         sub_signals = [
-            (mom_signal, self.strategy_params["momentum_weight"]),
-            (mr_signal, self.strategy_params["mean_rev_weight"]),
+            (mom_signal, self.strategy_params.get("momentum_weight", 0.5)),
+            (mr_signal, mr_w),
         ]
 
         weighted_score = 0
@@ -54,31 +66,57 @@ class HybridBot(BaseBot):
             reasons.append(f"{sig.get('reasoning', '')[:60]}")
 
         if active_signals == 0:
-            return {"action": "hold", "side": "yes", "confidence": 0,
-                    "reasoning": "All sub-strategies say hold"}
+            return {
+                "action": "hold",
+                "side": "yes",
+                "confidence": 0,
+                "reasoning": "All sub-strategies say hold",
+            }
 
-        yes_votes = sum(1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "yes")
-        no_votes = sum(1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "no")
-        agreement = max(yes_votes, no_votes) >= 2
+        yes_votes = sum(
+            1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "yes"
+        )
+        no_votes = sum(
+            1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "no"
+        )
+
+        # Consensus rule: accept if at least 2/3 of active signals agree OR simple majority + weighted score
+        active_count = active_signals
+        required = 2 if active_count >= 3 else 1
+        agreement = max(yes_votes, no_votes) >= required or abs(weighted_score) >= 0.35
 
         confidence = abs(weighted_score)
         if agreement:
             confidence += self.strategy_params["agreement_bonus"]
         confidence = min(0.95, confidence)
 
-        threshold = self.strategy_params["confidence_threshold"]
+        # Use either strategy threshold or global min confidence as lower bound
+        import config
+
+        threshold = max(
+            self.strategy_params.get("confidence_threshold", 0.6),
+            config.get_min_confidence()
+            if hasattr(config, "get_min_confidence")
+            else 0.5,
+        )
         if confidence < threshold:
-            return {"action": "hold", "side": "yes", "confidence": confidence,
-                    "reasoning": f"Ensemble confidence {confidence:.2f} below threshold {threshold}"}
+            return {
+                "action": "hold",
+                "side": "yes",
+                "confidence": confidence,
+                "reasoning": f"Ensemble confidence {confidence:.2f} below threshold {threshold:.2f}",
+            }
 
         side = "yes" if weighted_score > 0 else "no"
         import config
+
         amount = config.get_max_position() * self.strategy_params["position_size_pct"]
 
         return {
             "action": "buy",
             "side": side,
             "confidence": confidence,
-            "reasoning": f"Ensemble ({yes_votes}Y/{no_votes}N, agree={agreement}): " + " | ".join(reasons),
+            "reasoning": f"Ensemble ({yes_votes}Y/{no_votes}N, agree={agreement}): "
+            + " | ".join(reasons),
             "suggested_amount": amount,
         }
