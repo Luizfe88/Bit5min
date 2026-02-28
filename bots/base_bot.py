@@ -20,6 +20,7 @@ import edge_model
 from telegram_notifier import get_telegram_notifier
 from core.risk_manager import risk_manager
 from core.market_lock import market_lock
+from core.slippage_model import SlippageCalculator
 
 logger = setup_logging_with_brt(__name__)
 
@@ -542,8 +543,9 @@ class BaseBot(ABC):
             )
             return {"success": False, "reason": "position_below_minimum"}
 
-        # Ensure not exceeding max position limits (keep existing safeguards)
-        amount = min(amount, max_pos)
+        # Dynamic Size uses its own multiplier based on 50% Bankroll rules, and no longer
+        # blindly restricted by max_pos which caused sizing artificial limits on $10k bankrolls.
+        # amount = min(amount, max_pos)  <-- REMOVIDO para sizing dinâmico funcionar livremente.
 
         # Usar o RiskManager centralizado
         allowed, reason = risk_manager.can_place_trade(
@@ -879,8 +881,51 @@ class BaseBot(ABC):
                 )
                 return {"success": False, "reason": "price_unavailable"}
 
-            shares = round(float(amount) / float(price), 6) if price > 0 else 0.0
+            # --- SQAURE ROOT SLIPPAGE IMPACT MODEL ---
+            m_vol_24h = market.get("volume_24h", 1000.0)
+            try:
+                m_vol_24h = float(m_vol_24h)
+            except (ValueError, TypeError):
+                m_vol_24h = 1000.0
 
+            # O valor do 'price' captado da API é sempre em relação à probabilidade do YES
+            # Se a decisão for "no", a probabilidade base a comprar é 1 - price.
+            # O SlippageCalculator já cuida disso internamente e devolve o Target + Penalidade.
+            fill_price = SlippageCalculator.calculate_fill_price(
+                side=signal["side"], 
+                order_amount_usd=amount, 
+                market_price=price, 
+                market_volume_24h=m_vol_24h
+            )
+
+            # LIMITES DE LIQUIDEZ E SLIPPAGE EXTREMO
+            # Um price limit aceitável em Polymarket costuma bater até 0.99
+            if fill_price >= 0.99:
+                logger.error(
+                    f"[{self.name}] Liquidez Insuficiente. Slippage empurrou preço de paper trade ({signal['side']}) para {fill_price:.3f} >= 0.99. Abortando trade para evitar overfitting."
+                )
+                return {"success": False, "reason": "insufficient_liquidity"}
+
+            # shares = amount / price (agora usando fill_price penalizado)
+            shares = round(float(amount) / float(fill_price), 6) if fill_price > 0 else 0.0
+
+            # --- SL/TP RECALCULATION DUE TO SLIPPAGE (FIX LOGGING BUG) ---
+            # O sistema até agora estava enviando sl_price=None ou calculando base no old current_price.
+            # O db recebia campos nulls pois recálculo não estava sincronizado com o db persist aqui no paper.
+            
+            if self.enable_sl_tp:
+                # O preço da minha posição de entrada é estritamente fill_price.
+                if self.trailing_enabled:
+                    if tp_price is None and fill_price > 0:
+                        tp_price = max(0.001, fill_price - getattr(self, "trailing_distance", 0.045))
+                    if sl_price is None and self.enable_sl_tp and fill_price > 0:
+                        sl_price = max(0.001, fill_price * (1.0 + self.sl_pct))
+                elif sl_price is None and tp_price is None:
+                    calc_sl = fill_price * (1.0 + self.sl_pct)
+                    calc_tp = fill_price * (1.0 + self.tp_pct)
+                    sl_price = max(0.001, min(0.999, calc_sl))
+                    tp_price = max(0.001, min(0.999, calc_tp))
+            
             # Persist trade locally in DB (no external order placed)
             import uuid
 
@@ -898,20 +943,20 @@ class BaseBot(ABC):
                 trade_id=trade_id,
                 shares_bought=shares,
                 trade_features=signal.get("features"),
-                sl_price=sl_price,
-                tp_price=tp_price,
+                sl_price=sl_price,   # FIX: Agora persistidos corretamente
+                tp_price=tp_price,   # FIX: Agora persistidos corretamente
             )
 
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
             logger.info(
-                f"[{self.name}] Local PAPER trade saved: {signal['side']} ${amt_s} shares={shares} price={price:.4f} on {market.get('question', '')[:50]}"
+                f"[{self.name}] Local PAPER trade saved: {signal['side']} ${amt_s} shares={shares} fill_price={fill_price:.4f} (slippage impact) on {market.get('question', '')[:50]}"
             )
 
             return {
                 "success": True,
                 "trade_id": trade_id,
                 "shares_bought": shares,
-                "price": price,
+                "price": fill_price,  # Retorna fill_price em vez de current_price
             }
 
         except Exception as e:
