@@ -27,6 +27,7 @@ from bots.bot_updown import UpDownBot
 from signals.price_feed import get_feed as get_price_feed
 from signals.sentiment import get_feed as get_sentiment_feed
 from signals.orderflow import get_feed as get_orderflow_feed
+from signals.regime_detector import hurst_exponent
 from copytrading.tracker import WalletTracker
 from copytrading.copier import TradeCopier
 from logging_config import setup_logging_with_brt
@@ -1474,6 +1475,18 @@ def main_loop(bots, api_key):
                 all_price_signals[crypto] = price_signals
                 all_sent_signals[crypto] = sent_signals
 
+            # compute regime (Hurst exponent) once per crypto type and treat as a
+            # "market climate" that is passed to every bot
+            regime_map = {}
+            import pandas as _pd
+
+            for crypto, p_signals in all_price_signals.items():
+                closes = p_signals.get("prices", []) or []
+                if closes:
+                    regime_map[crypto] = hurst_exponent(_pd.Series(closes))
+                else:
+                    regime_map[crypto] = 0.5  # neutral/default
+
             new_trades = 0
             skip_count = 0
             decide_count = 0
@@ -1492,6 +1505,9 @@ def main_loop(bots, api_key):
                 price_signals = all_price_signals.get(crypto_type, {})
                 sent_signals = all_sent_signals.get(crypto_type, {})
                 combined_signals = {**price_signals, **sent_signals, **of_signals}
+                # attach regime signal for bots that care
+                regime_val = regime_map.get(crypto_type, 0.5)
+                combined_signals["market_regime"] = regime_val
 
                 # Each bot trades independently on its own account
                 for bot in bots:

@@ -15,6 +15,10 @@ SYMBOLS = {"btc": "btcusdt"}
 
 class PriceFeed:
     def __init__(self, max_candles=100):
+        # store full candle dictionaries (high, low, close) instead of just a
+        # float. this allows downstream code (ATR, regime detection, etc.) to
+        # access all OHLC values while still exposing a convenient list of
+        # close prices for legacy consumers.
         self.prices = {sym: deque(maxlen=max_candles) for sym in SYMBOLS}
         self.volumes = {sym: deque(maxlen=max_candles) for sym in SYMBOLS}
         self.latest = {sym: 0.0 for sym in SYMBOLS}
@@ -25,10 +29,10 @@ class PriceFeed:
     def start(self):
         if self._running:
             return
-        
+
         # Load historical data before starting WebSocket
         self._load_historical_data()
-        
+
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -60,6 +64,8 @@ class PriceFeed:
                         msg = json.loads(raw)
                         kline = msg.get("k", {})
                         symbol = kline.get("s", "").lower()
+                        high = float(kline.get("h", 0))
+                        low = float(kline.get("l", 0))
                         close = float(kline.get("c", 0))
                         volume = float(kline.get("v", 0))
                         is_closed = kline.get("x", False)
@@ -70,7 +76,15 @@ class PriceFeed:
                                 self.latest[name] = close
                                 self._last_update[name] = time.time()
                                 if is_closed:
-                                    self.prices[name].append(close)
+                                    # append a dict with full OHLC so ATR/etc can be
+                                    # computed later
+                                    self.prices[name].append(
+                                        {
+                                            "high": high,
+                                            "low": low,
+                                            "close": close,
+                                        }
+                                    )
                                     self.volumes[name].append(volume)
                                 break
                     except (KeyError, ValueError):
@@ -85,21 +99,32 @@ class PriceFeed:
         """Load 100 candles of historical data from Binance REST API before WebSocket starts."""
         try:
             # Fetch 100 minutes of BTC data
-            response = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=100")
+            response = requests.get(
+                "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=100"
+            )
             response.raise_for_status()
             klines = response.json()
-            
+
             for kline in klines:
+                # kline format: [open, high, low, close, ...]
+                high = float(kline[2])
+                low = float(kline[3])
                 close_price = float(kline[4])  # Close price
-                volume = float(kline[5])       # Volume
-                
-                # Fill BTC data
-                self.prices['btc'].append(close_price)
-                self.volumes['btc'].append(volume)
-                self.latest['btc'] = close_price
-                
+                volume = float(kline[5])  # Volume
+
+                # Fill BTC data with candle dict
+                self.prices["btc"].append(
+                    {
+                        "high": high,
+                        "low": low,
+                        "close": close_price,
+                    }
+                )
+                self.volumes["btc"].append(volume)
+                self.latest["btc"] = close_price
+
             logger.info(f"Loaded {len(self.prices['btc'])} historical BTC candles")
-            
+
         except Exception as e:
             logger.error(f"Failed to load historical data: {e}")
 
@@ -110,8 +135,14 @@ class PriceFeed:
             return {"prices": [], "volumes": [], "latest": 0}
 
         stale = (time.time() - self._last_update.get(sym, 0)) > 60
+        candles = list(self.prices[sym])
+        # legacy list of closes for backwards compatibility
+        closes = [c.get("close", 0) if isinstance(c, dict) else c for c in candles]
         return {
-            "prices": list(self.prices[sym]),
+            # callers which previously expected floats will still see it here
+            "prices": closes,
+            # new code can look at "candles" for full OHLC
+            "candles": candles,
             "volumes": list(self.volumes[sym]),
             "latest": self.latest.get(sym, 0),
             "stale": stale,
