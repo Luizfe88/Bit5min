@@ -34,6 +34,7 @@ def init_db():
                 tp_price REAL,
                 current_sl REAL,
                 current_tp REAL,
+                tp_triggered INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
@@ -145,7 +146,7 @@ def log_trade(bot_name, market_id, side, amount, venue, mode, confidence=None,
               reasoning=None, market_question=None, trade_id=None, shares_bought=None,
               trade_features=None, sl_price=None, tp_price=None):
     with get_conn() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """INSERT INTO trades (bot_name, market_id, market_question, side, amount,
                confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought,
                sl_price, tp_price, current_sl, current_tp)
@@ -156,9 +157,10 @@ def log_trade(bot_name, market_id, side, amount, venue, mode, confidence=None,
              venue, mode, trade_id, shares_bought,
              sl_price, tp_price, sl_price, tp_price)
         )
+        return cursor.lastrowid
 
-def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=None, current_tp=None):
-    """Updates SL/TP values for an existing trade."""
+def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=None, current_tp=None, tp_triggered=None):
+    """Updates SL/TP values and TP triggered flag for an existing trade."""
     updates = []
     params = []
     
@@ -174,12 +176,15 @@ def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=Non
     if current_tp is not None:
         updates.append("current_tp=?")
         params.append(current_tp)
+    if tp_triggered is not None:
+        updates.append("tp_triggered=?")
+        params.append(1 if tp_triggered else 0)
         
     if not updates:
         return
 
     params.append(trade_id)
-    query = f"UPDATE trades SET {', '.join(updates)} WHERE trade_id=?"
+    query = f"UPDATE trades SET {', '.join(updates)} WHERE id=?"
     
     with get_conn() as conn:
         conn.execute(query, tuple(params))

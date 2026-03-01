@@ -73,6 +73,10 @@ class OrderflowFeed:
                     # Enriquecer com dados reais limitados
                     vol_24h = float(ctx.get("volume_24h", 0))
                     
+                    # Capture spread_pct from slippage if available
+                    slip = ctx.get("slippage", {})
+                    spread_pct = slip.get("spread_pct")
+
                     # Simular distribuição de volume baseada no volume real
                     # (Já que API pública não dá L2 detalhado facilmente aqui)
                     base_data["buy_volume"] = vol_24h * random.uniform(0.4, 0.6)
@@ -84,6 +88,7 @@ class OrderflowFeed:
                         "orderflow": {
                             "current_probability": ctx.get("current_probability", 0.5),
                             "volume_24h": vol_24h,
+                            "spread_pct": spread_pct
                         },
                         "orderflow_extended": base_data
                     }

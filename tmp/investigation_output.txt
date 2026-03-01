@@ -1,0 +1,34 @@
+Investigating trades for mean_reversion-g4-179...
+
+ID: 723 | Side: no | Amount: $1320.00 | PnL: $-1320.00 | Outcome: loss
+Market: Bitcoin Up or Down - March 1, 7:15AM-7:20AM ET
+Time: 2026-03-01 12:21:29
+--------------------------------------------------
+ID: 722 | Side: yes | Amount: $1320.00 | PnL: $-1320.00 | Outcome: loss
+Market: Bitcoin Up or Down - March 1, 6:30AM-6:45AM ET
+Time: 2026-03-01 11:41:44
+--------------------------------------------------
+ID: 721 | Side: yes | Amount: $920.00 | PnL: $0.00 | Outcome: expired
+Market: Bitcoin Up or Down - March 1, 4:00AM-8:00AM ET
+Time: 2026-03-01 10:26:36
+--------------------------------------------------
+ID: 720 | Side: yes | Amount: $1320.00 | PnL: $-1320.00 | Outcome: loss
+Market: Bitcoin Up or Down - March 1, 3:15AM-3:30AM ET
+Time: 2026-03-01 08:20:37
+--------------------------------------------------
+ID: 719 | Side: no | Amount: $920.00 | PnL: $0.00 | Outcome: expired
+Market: Bitcoin Up or Down - March 1, 12:00AM-4:00AM ET
+Time: 2026-03-01 05:44:39
+--------------------------------------------------
+ID: 718 | Side: no | Amount: $920.00 | PnL: $0.00 | Outcome: expired
+Market: Bitcoin Up or Down - March 1, 9:30PM-9:45PM ET
+Time: 2026-03-01 03:03:05
+--------------------------------------------------
+ID: 717 | Side: no | Amount: $1320.00 | PnL: $0.00 | Outcome: expired
+Market: Bitcoin Up or Down - March 1, 7:40PM-7:45PM ET
+Time: 2026-03-01 01:31:45
+--------------------------------------------------
+ID: 716 | Side: no | Amount: $1320.00 | PnL: $0.00 | Outcome: expired
+Market: Bitcoin Up or Down - March 1, 7:05PM-7:10PM ET
+Time: 2026-03-01 00:23:28
+--------------------------------------------------

@@ -75,11 +75,15 @@ class MeanRevSLBot(MeanRevBot):
             if decision.get("confidence", 0) > 0.15:
                 tp_pct = 0.20  # Aumenta alvo para alta convicção
             
-            sl_price = entry_est * (1.0 - sl_pct)
-            tp_price = entry_est * (1.0 + tp_pct)
+            if side == "yes":
+                sl_price = entry_est * (1.0 - sl_pct)
+                tp_price = entry_est * (1.0 + tp_pct)
+            else: # NO
+                sl_price = entry_est * (1.0 + sl_pct) # SL acima
+                tp_price = entry_est * (1.0 - tp_pct) # TP abaixo
             
             decision["sl_price"] = round(sl_price, 3)
             decision["tp_price"] = round(tp_price, 3)
-            decision["reasoning"] += f" [SL@{sl_price:.3f} TP@{tp_price:.3f}]"
+            decision["reasoning"] += f" [{side} SL@{sl_price:.3f} TP@{tp_price:.3f}]"
 
         return decision

@@ -14,6 +14,7 @@ class OpenPosition:
     tp_price: Optional[float] = None  # Preço do TOKEN (YES ou NO) que aciona TP
     confidence: float = 0.0
     trade_id: Optional[str] = None
+    id: Optional[int] = None  # Database row ID
     shares: float = 0.0  # Quantidade de shares compradas
     token_id: Optional[str] = None # Para facilitar venda
     grace_period_ends_at: Optional[float] = None  # Timestamp até quando ignorar SL/TP
@@ -23,6 +24,7 @@ class OpenPosition:
     trailing_enabled: bool = False
     trailing_distance: Optional[float] = None
     trailing_step: Optional[float] = None
+    tp_triggered: bool = False  # Indica se o Take Profit foi atingido e o Trailing foi ligado
 
     def __post_init__(self):
         # Validação básica

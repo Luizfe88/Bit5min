@@ -462,8 +462,13 @@ async def get_trades(bot: str = None, limit: int = 50):
     if bot:
         trades = db.get_bot_trades(bot, limit=limit)
         for t in trades:
+            t["trade_id_display"] = str(t.get("id")) # NEW: Numeric ID for display
             t["amount_display"] = _fmt_amount_usd(t.get("amount"))
-            t["pnl_display"] = _fmt_pnl_usd(t.get("pnl")) if t.get("pnl") is not None else None
+            pnl = t.get("pnl")
+            amt = t.get("amount") or 1.0
+            t["pnl_display"] = _fmt_pnl_usd(pnl) if pnl is not None else None
+            t["pnl_pct"] = round((pnl / amt) * 100, 2) if pnl is not None else 0.0
+            t["trailing"] = "✅" if bool(t.get("tp_triggered", 0)) else "❌"
             mid = t.get("market_id")
             info = close_map.get(mid) if mid else None
             resolves_at = info.get("resolves_at") if info else None
@@ -492,8 +497,13 @@ async def get_trades(bot: str = None, limit: int = 50):
         now_dt = datetime.now(timezone.utc)
         for r in rows:
             t = dict(r)
+            t["trade_id_display"] = str(t.get("id")) # NEW: Numeric ID for display
             t["amount_display"] = _fmt_amount_usd(t.get("amount"))
-            t["pnl_display"] = _fmt_pnl_usd(t.get("pnl")) if t.get("pnl") is not None else None
+            pnl = t.get("pnl")
+            amt = t.get("amount") or 1.0
+            t["pnl_display"] = _fmt_pnl_usd(pnl) if pnl is not None else None
+            t["pnl_pct"] = round((pnl / amt) * 100, 2) if pnl is not None else 0.0
+            t["trailing"] = "✅" if bool(t.get("tp_triggered", 0)) else "❌"
             mid = t.get("market_id")
             info = close_map.get(mid) if mid else None
             resolves_at = info.get("resolves_at") if info else None
@@ -511,57 +521,10 @@ async def get_trades(bot: str = None, limit: int = 50):
 
 
 @app.get("/api/open-positions")
-async def get_open_positions():
-    """Return all trades that are still open (outcome is NULL)."""
-    import re
-    print("DEBUG: /api/open-positions endpoint called")  # Debug print
-
-    def extract_close_time(question: str):
-        # Extracts time like "6:10PM-6:15PM" from market question
-        match = re.search(r'(\d{1,2}:\d{2}(?:AM|PM))', question)
-        return match.group(1) if match else None
-
-    try:
-        with db.get_conn() as conn:
-            print("DEBUG: Getting database connection")  # Debug print
-            rows = conn.execute("""
-                SELECT 
-                    t.id,
-                    t.bot_name,
-                    t.market_question,
-                    t.side,
-                    t.amount,
-                    t.shares_bought,
-                    t.created_at
-                FROM trades t
-                WHERE t.outcome IS NULL
-                ORDER BY t.created_at DESC
-            """).fetchall()
-            
-            print(f"DEBUG: Found {len(rows)} open positions")  # Debug print
-            
-            positions = []
-            # FIX: Indentação corrigida para estar DENTRO do bloco with
-            for r in rows:
-                pos = dict(r)
-                
-                # Formatar o valor investido
-                pos['invested'] = _fmt_amount_usd(pos.get('amount'))
-                
-                # 3. Timestamps
-                pos['open_time'] = pos['created_at']
-                pos['expected_close_time'] = extract_close_time(pos['market_question'])
-
-                positions.append(pos)
-        
-        # O retorno também deve ser fora do loop mas dentro da função
-        print(f"DEBUG: Returning {len(positions)} positions")  # Debug print
-        return JSONResponse(positions)
-    except Exception as e:
-        print(f"DEBUG: Error in get_open_positions: {e}")  # Debug print
-        import traceback
-        traceback.print_exc()
-        return JSONResponse([])  # Return empty list on error
+async def get_open_positions_hyphen():
+    """Redireciona ou usa a mesma lógica do underscore para evitar confusão."""
+    data = await get_open_positions_underscore()
+    return data
 
 
 @app.get("/api/copytrading")
@@ -613,7 +576,7 @@ async def get_learning():
 
 
 @app.get("/api/open_positions")
-async def get_open_positions():
+async def get_open_positions_underscore():
     """Retorna posições abertas com preço atual, TP/SL + % de distância e dados para highlight"""
     mode = config.get_current_mode()
     positions = []
@@ -649,57 +612,60 @@ async def get_open_positions():
         entry = amount / shares if shares > 0 else 0
         side = t.get("side", "").upper()
         
-        # Determinar Preço Atual
+        # Determinar Preço Atual (YES)
         raw_price = price_map.get(market_id)
-        curr = raw_price
         
-        # Ajuste de preço para Short (NO)
-        if side == "NO" and raw_price is not None:
-            curr = 1.0 - raw_price
-            
-        # Extrair SL/TP
-        # Primeiro tenta pegar das colunas do DB (mais rápido/atualizado)
+        # Cálculo de lucratividade (Real ROI baseado no Token)
+        pnl_pct = 0.0
+        pnl_usd = 0.0
+        curr_token = None
+        
+        if raw_price is not None:
+            curr_token = raw_price if side == "YES" else (1.0 - raw_price)
+            if entry > 0:
+                pnl_pct = ((curr_token - entry) / entry) * 100
+                pnl_usd = (pnl_pct / 100) * amount
+
+        # Garantir que são números finitos
+        import math
+        if not math.isfinite(pnl_pct): pnl_pct = 0.0
+        if not math.isfinite(pnl_usd): pnl_usd = 0.0
+
+        # Extrair SL/TP (Sempre em termos de YES price agora)
         sl = t.get("current_sl") or t.get("sl_price")
         tp = t.get("current_tp") or t.get("tp_price")
-        trailing_enabled = False
-        
-        # Se não tiver no DB, tenta do trade_features (retrocompatibilidade)
-        try:
-            feats = json.loads(t.get("trade_features") or "{}")
-            if "trailing_enabled" in feats: trailing_enabled = bool(feats["trailing_enabled"])
-            
-            if sl is None:
-                if "sl_price" in feats: sl = float(feats["sl_price"])
-                # Fallback percentual
-                elif "sl_percent" in feats:
-                    sl = entry * (1 + float(feats["sl_percent"])/100)
-            
-            if tp is None:
-                if "tp_price" in feats: tp = float(feats["tp_price"])
-                # Fallback percentual
-                elif "tp_percent" in feats:
-                    tp = entry * (1 + float(feats["tp_percent"])/100)
-        except:
-            pass
+        trailing_enabled = bool(t.get("tp_triggered", 0))
 
-        # Cálculo de distância %
+        # Cálculo de distância % (Comparando YES vs YES)
         tp_dist = sl_dist = None
         tp_display = sl_display = "—"
 
-        if tp and curr:
-            tp_dist = (tp - curr) / curr * 100
-            tp_display = f"{tp:.4f} ({'+' if tp_dist >= 0 else ''}{tp_dist:.2f}%)"
-        if sl and curr:
-            sl_dist = (curr - sl) / curr * 100
-            sl_display = f"{sl:.4f} ({'' if sl_dist >= 0 else ''}{sl_dist:.2f}%)"
+        if raw_price is not None:
+            if side == "YES":
+                if tp:
+                    tp_dist = (tp - raw_price) / raw_price * 100
+                    tp_display = f"{tp:.4f} ({'+' if tp_dist >= 0 else ''}{tp_dist:.2f}%)"
+                if sl:
+                    sl_dist = (raw_price - sl) / raw_price * 100
+                    sl_display = f"{sl:.4f} ({'-' if sl_dist >= 0 else ''}{sl_dist:.2f}%)"
+            else:
+                # NO side: Target TP is BELOW, Target SL is ABOVE
+                if tp:
+                    tp_dist = (raw_price - tp) / raw_price * 100
+                    tp_display = f"{tp:.4f} ({'-' if tp_dist >= 0 else ''}{tp_dist:.2f}%)"
+                if sl:
+                    sl_dist = (sl - raw_price) / raw_price * 100
+                    sl_display = f"{sl:.4f} ({'+' if sl_dist >= 0 else ''}{sl_dist:.2f}%)"
 
         positions.append({
-            "trade_id": t.get("trade_id") or str(t.get("id")),
+            "trade_id": str(t.get("id")), # Always use the DB numeric ID
             "bot_name": t.get("bot_name", "unknown"),
             "market": t.get("market_question", "Bitcoin Up or Down..."),
             "side": side,
             "entry": round(entry, 4),
-            "current": round(curr, 4) if curr else None,
+            "current": round(curr_token, 4) if curr_token is not None else None,
+            "pnl_pct": round(pnl_pct, 2),
+            "pnl_usd": round(pnl_usd, 2),
             "sl_price": sl,
             "tp_price": tp,
             "tp_display": tp_display,

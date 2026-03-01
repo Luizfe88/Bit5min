@@ -35,6 +35,7 @@ class TelegramCommands:
             '/resumo': self.handle_resumo,
             '/evolucao_trades': self.handle_evolucao_trades,
             '/trades_recentes': self.handle_trades_recentes,
+            '/mode': self.handle_mode,
         }
     
     def get_current_time_brt(self) -> str:
@@ -73,6 +74,7 @@ class TelegramCommands:
 • /performance - Performance recente
 
 ⚙️ <b>Controle:</b>
+• /mode [nivel] - Alterar agressividade (conservative, medium, aggressive)
 • /reset - Resetar todos os bots
 • /resumo - Resumo geral
 
@@ -230,7 +232,8 @@ class TelegramCommands:
                         t.amount,
                         t.created_at,
                         t.confidence,
-                        t.market_id
+                        t.market_id,
+                        t.trade_id
                     FROM trades t
                     INNER JOIN (
                         SELECT market_id, bot_name
@@ -268,6 +271,7 @@ class TelegramCommands:
                     side_emoji = "📈" if side == "YES" else "📉"
                     
                     message += f"{side_emoji} <b>{bot_name}</b>\n"
+                    message += f"🆔 <b>ID:</b> <code>{trade['trade_id'] or 'N/A'}</code>\n"
                     message += f"📝 <b>Mercado:</b> {question[:50]}{'...' if len(question) > 50 else ''}\n"
                     message += f"💰 <b>Valor:</b> <code>${amount:.2f}</code>\n"
                     message += f"🎯 <b>Lado:</b> {side}\n"
@@ -580,6 +584,33 @@ class TelegramCommands:
             
         except Exception as e:
             return f"❌ Erro ao resetar bots: {str(e)}"
+            
+    def handle_mode(self, user_id: str, args: list = None) -> str:
+        """Handle /mode command - Change global trading aggression."""
+        valid_modes = ["conservative", "medium", "aggressive"]
+        
+        if not args or len(args) == 0:
+            current_mode = config.get_aggression_level()
+            return (f"🎛️ <b>Modo de Agressividade Atual:</b> {current_mode.upper()}\n\n"
+                    f"Para alterar, use:\n"
+                    f"<code>/mode conservative</code>\n"
+                    f"<code>/mode medium</code>\n"
+                    f"<code>/mode aggressive</code>")
+                    
+        new_mode = args[0].lower().strip()
+        if new_mode not in valid_modes:
+            return f"❌ Modo inválido '{new_mode}'. Use: conservative, medium ou aggressive."
+            
+        try:
+            # Save to database to persist across restarts
+            db.set_arena_state("trading_aggression", new_mode)
+            
+            # Update running config in memory
+            config.TRADING_AGGRESSION = new_mode
+            
+            return f"✅ <b>Sucesso!</b> Modo de agressividade alterado para: <b>{new_mode.upper()}</b>."
+        except Exception as e:
+            return f"❌ Erro ao alterar o modo: {str(e)}"
     
     def handle_ranking(self, user_id: str) -> str:
         """Handle /ranking command - Show bot ranking."""

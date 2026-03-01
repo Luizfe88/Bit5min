@@ -157,27 +157,47 @@ class ArenaRiskManager:
         enable_sl_tp: bool,
         sl_pct: float,
         tp_pct: float,
+        side: str = 'yes',
         trailing_enabled: bool = False,
         trailing_distance: float = 0.045
     ) -> Dict[str, Optional[float]]:
         """
-        Calcula os valores de SL e TP com base no fill_price.
-        Retorna explicitamente um dicionário com 'sl_price' e 'tp_price'.
+        Calcula os valores de SL e TP sempre referenciados ao preço do YES (Market Price).
+        fill_price: preço do token comprado (YES price se side='yes', NO token price se side='no').
+        Os alvos gerados são sempre em termos de YES price para o Banco de Dados.
         """
         sl_price = None
         tp_price = None
 
+        # Garantir que as porcentagens sejam magnitudes positivas
+        sl_pct = abs(sl_pct)
+        tp_pct = abs(tp_pct)
+
         if enable_sl_tp and fill_price > 0:
-            if trailing_enabled:
-                tp_price = max(0.001, fill_price - trailing_distance)
-                sl_price = max(0.001, fill_price * (1.0 + sl_pct))
-            else:
-                calc_sl = fill_price * (1.0 + sl_pct)
-                calc_tp = fill_price * (1.0 + tp_pct)
-                # Mantém dentro de limites seguros 0.1% a 99.9%
-                sl_price = max(0.001, min(0.999, calc_sl))
-                tp_price = max(0.001, min(0.999, calc_tp))
-                
+            if side.lower() == 'yes':
+                # Lado YES: Lucra com a subida, perde com a queda
+                sl_price = fill_price * (1 - sl_pct)
+                tp_price = fill_price * (1 + tp_pct)
+
+            elif side.lower() == 'no':
+                # 1. Encontra o custo real investido no lado NO
+                cost_no = 1.0 - fill_price
+
+                # 2. Calcula o valor alvo do contrato NO baseado nas porcentagens
+                # Se bater no SL, o valor do contrato NO CAIU. Se bater no TP, SUBIU.
+                sl_value_no = cost_no * (1 - sl_pct)
+                tp_value_no = cost_no * (1 + tp_pct)
+
+                # 3. Converte de volta para a referência de preço do YES (Universal) para o Banco de Dados
+                sl_price = 1.0 - sl_value_no   # acima da entrada YES → gatilho de stop
+                tp_price = 1.0 - tp_value_no   # abaixo da entrada YES → gatilho de lucro
+
+            # Clamp de segurança
+            if sl_price is not None:
+                sl_price = max(0.001, min(0.999, sl_price))
+            if tp_price is not None:
+                tp_price = max(0.001, min(0.999, tp_price))
+
         return {"sl_price": sl_price, "tp_price": tp_price}
 
     def _handle_pause(self, bot_name: str, reason: str, current: float, limit: float):
@@ -288,145 +308,163 @@ class ArenaRiskManager:
 
     def update_trailing_tp(self, pos: OpenPosition, current_price: float):
         """
-        Atualiza o TP dinamicamente se trailing estiver habilitado.
-        current_price: O preço ATUAL da posição que possuímos (0.0-1.0).
-                       Se temos NO, current_price já deve ser (1 - YES_price).
+        CATRACA (RATCHET): Atualiza o trailing stop de acordo com o preço atual do YES.
+        Regra de Ouro:
+          YES -> SL só pode SUBIR  (nunca diminuir).
+          NO  -> SL só pode DESCER (nunca aumentar).
+        Isso garante que lucros travados nunca sejam devolvidos.
         """
-        if not pos.trailing_enabled or pos.trailing_distance is None:
+        if not pos.trailing_enabled or pos.sl_price is None:
             return
 
-        # Só começa a trailing depois do grace period (se houver)
-        if pos.grace_period_ends_at and time.time() < pos.grace_period_ends_at:
-            return
+        side = pos.direction.lower()
+        dist = getattr(pos, 'trailing_distance', 0.025)
 
-        # Inicialização Segura
-        if pos.tp_price is None:
-            # Inicializa o Trailing Floor abaixo do preço atual
-            pos.tp_price = max(0.01, current_price - pos.trailing_distance)
-            logger.info(
-                f"{Colors.MAGENTA}[TRAILING INIT]{Colors.RESET} "
-                f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
-                f"inicializou TP em {Colors.GREEN}{pos.tp_price:.3f}{Colors.RESET} "
-                f"(Price: {Colors.YELLOW}{current_price:.3f}{Colors.RESET})"
-            )
-            return
-
-        old_tp = pos.tp_price
-        dist = pos.trailing_distance
-        step = pos.trailing_step or 0.005
-
-        # Lógica Unificada: Trailing TP é um FLOOR que sobe com o preço
-        # Novo TP potencial = Preço Atual - Distância
-        potential_tp = current_price - dist
-
-        # O TP só pode subir (nunca descer) para proteger lucro
-        # Se o preço subiu muito, o potential_tp vai ser maior que o old_tp
-        if potential_tp > old_tp:
-            # Aplica step mínimo para evitar spam de logs/updates
-            if (potential_tp - old_tp) >= step:
-                pos.tp_price = potential_tp
-                
-                try:
-                    # Sync to database explicitly
-                    db.update_position_sl_tp(trade_id=pos.trade_id, tp_price=pos.tp_price)
-                except Exception as e:
-                    logger.error(f"Failed to update trailing TP in DB for {pos.trade_id}: {e}")
-
-                logger.info(
-                    f"{Colors.MAGENTA}[TRAILING]{Colors.RESET} "
-                    f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
-                    f"atualizou TP de {Colors.YELLOW}{old_tp:.3f}{Colors.RESET} -> {Colors.GREEN}{pos.tp_price:.3f}{Colors.RESET} "
-                    f"(Price: {Colors.YELLOW}{current_price:.3f}{Colors.RESET})"
-                )
+        if pos.tp_triggered:
+            if side == 'yes':
+                # Candidato = current_price - trailing_distance
+                candidate = current_price - dist
+                # CATRACA: só avança se for melhor (mais alto)
+                if candidate > pos.sl_price:
+                    pos.sl_price = candidate
+                    db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True)
+                    logger.info(
+                        f"{Colors.CYAN}[TRAILING UP]{Colors.RESET} "
+                        f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                        f"SL ratcheted to {Colors.GREEN}{pos.sl_price:.4f}{Colors.RESET} "
+                        f"(YES={current_price:.4f})"
+                    )
+            else:
+                # NO: Lucro aumenta quando YES CAI. SL é teto — só pode DESCER.
+                # Candidato = current_price + trailing_distance
+                candidate = current_price + dist
+                # CATRACA: só avança se for melhor (mais baixo)
+                if candidate < pos.sl_price:
+                    pos.sl_price = candidate
+                    db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True)
+                    logger.info(
+                        f"{Colors.CYAN}[TRAILING DOWN]{Colors.RESET} "
+                        f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                        f"SL ratcheted to {Colors.RED}{pos.sl_price:.4f}{Colors.RESET} "
+                        f"(YES={current_price:.4f})"
+                    )
 
     def check_sl_tp(
         self, market_prices: Dict[str, dict]
     ) -> List[tuple[OpenPosition, str, float]]:
         """
-        Verifica SL/TP para todas as posições abertas.
-        Retorna lista de (posicao, razao, preco_atual).
-        market_prices: dict {market_id: {'current_price': price, ...}}
+        Verifica se as posições abertas atingiram SL ou TP.
+        A comparação agora é Side-Aware usando o preço do YES.
         """
         exits = []
-        now = time.time()
-
         for trade_id, pos in list(self.open_positions.items()):
-            # 1. Grace Period Check
-            if pos.grace_period_ends_at and now < pos.grace_period_ends_at:
+            market_id = pos.market_id
+            m_state = market_prices.get(market_id)
+
+            if not m_state or 'current_price' not in m_state:
                 continue
 
-            market_data = market_prices.get(pos.market_id)
-            if not market_data:
+            # SEMPRE usamos o preço do YES como referência de mercado
+            current_yes = float(m_state['current_price'])
+            side = pos.direction.lower()
+
+            # 1. SLIPPAGE/SAFETY GUARD (Preço inválido)
+            if current_yes <= 0 or current_yes >= 1.0:
                 continue
 
-            # Determinar preço atual do token que possuímos
-            # API Simmer retorna 'current_price' como probabilidade do YES
-            current_yes_price = market_data.get("current_price")
-            if current_yes_price is None:
-                continue
-
-            try:
-                current_yes_price = float(current_yes_price)
-            except ValueError:
-                continue
-
-            # Se tenho shares NO, meu preço é 1 - YES
-            if pos.direction == "NO":
-                my_price = 1.0 - current_yes_price
-            else:
-                my_price = current_yes_price
-
-            # Bounds check
-            my_price = max(0.001, min(0.999, my_price))
-
-            # --- BREAKEVEN AUTOMÁTICO (50% do caminho para o TP) ---
-            if not pos.trailing_enabled and pos.tp_price is not None and pos.entry_price is not None:
-                if pos.tp_price > pos.entry_price and not getattr(pos, "breakeven_triggered", False):
-                    dist_to_tp = pos.tp_price - pos.entry_price
-                    breakeven_trigger = pos.entry_price + (dist_to_tp * 0.5)
-                    
-                    if my_price >= breakeven_trigger:
-                        pos.sl_price = pos.entry_price
-                        pos.breakeven_triggered = True
-                        
-                        logger.info(
-                            f"{Colors.CYAN}[BREAKEVEN]{Colors.RESET} "
-                            f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
-                            f"atingiu 50% do TP. SL movido para a entrada {Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET} "
-                            f"(Price: {Colors.YELLOW}{my_price:.3f}{Colors.RESET})"
-                        )
-                        
-                        try:
-                            # Update directly in DB
+            # 2. BREAKEVEN AUTOMÁTICO (Mantido em termos de YES price)
+            if not pos.tp_triggered and pos.tp_price is not None:
+                # Lógica de breakeven simplificada: 50% do caminho.
+                # Para YES: (TP - Entry). Para NO: (Entry - TP).
+                if side == 'yes' and not getattr(pos, "breakeven_triggered", False):
+                    # Entry_price aqui é o Token Price (YES).
+                    entry_yes = pos.entry_price
+                    if pos.tp_price > entry_yes:
+                        trigger = entry_yes + (pos.tp_price - entry_yes) * 0.5
+                        if current_yes >= trigger:
+                            pos.sl_price = entry_yes
+                            setattr(pos, "breakeven_triggered", True)
                             db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price)
-                        except Exception as e:
-                            logger.error(f"Failed to update breakeven in DB for {pos.trade_id}: {e}")
+                elif side == 'no' and not getattr(pos, "breakeven_triggered", False):
+                    # Entry_price aqui é o Token Price (NO). Converter para YES.
+                    entry_yes = 1.0 - pos.entry_price
+                    if pos.tp_price < entry_yes:
+                        # Para NO, lucro é queda. Trigger = entry - 50% da queda até TP.
+                        trigger = entry_yes - (entry_yes - pos.tp_price) * 0.5
+                        if current_yes <= trigger:
+                            pos.sl_price = entry_yes
+                            setattr(pos, "breakeven_triggered", True)
+                            db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price)
 
-            # --- TRAILING TP UPDATE ---
+            # 3. TRAILING UPDATE
             if pos.trailing_enabled:
-                self.update_trailing_tp(pos, my_price)
+                self.update_trailing_tp(pos, current_yes)
 
-            # Checar SL (Fixo)
-            if pos.sl_price is not None:
-                if my_price <= pos.sl_price:
-                    exits.append((pos, "SL", my_price))
-                    continue
+            # 4. GESTÃO DE SAÍDA (SL / TP)
+            # Agora com Operadores Invertidos conforme lado para referência YES
+            
+            if side == 'yes':
+                # YES: SL (abaixo), TP (acima)
+                if pos.sl_price is not None and current_yes <= pos.sl_price:
+                    gap_warn = " [GAP]" if current_yes < pos.sl_price - 0.05 else ""
+                    label = ("Trailing Exit" if pos.tp_triggered else "SL") + gap_warn
+                    exits.append((pos, label, current_yes))
+                elif not pos.tp_triggered and pos.tp_price is not None and current_yes >= pos.tp_price:
+                    # ── GATILHO TP -> TRAILING (YES) ──────────────────────────────
+                    pos.tp_triggered = True
+                    pos.trailing_enabled = True
+                    pos.trailing_distance = 0.025
 
-            # Checar TP
-            if pos.tp_price is not None:
-                if pos.trailing_enabled:
-                    # Trailing TP atua como um Stop Loss dinâmico (Floor)
-                    # Se o preço cair abaixo do TP (que subiu), sai.
-                    # Isso garante que saímos com lucro garantido pelo trailing
-                    if my_price <= pos.tp_price:
-                        exits.append((pos, "TP (Trailing)", my_price))
-                        continue
-                else:
-                    # TP Fixo atua como Take Profit (Ceiling)
-                    # Se o preço subir acima do TP, sai.
-                    if my_price >= pos.tp_price:
-                        exits.append((pos, "TP", my_price))
-                        continue
+                    # LOCK-IN IMEDIATO (Catraca): garante 80% do lucro acumulado.
+                    # Nunca deixa o SL voltar abaixo do entry_price.
+                    entry_yes = pos.entry_price  # para YES, entry_price já é YES
+                    locked_sl = entry_yes + (current_yes - entry_yes) * 0.80
+                    # Catraca inicial: nunca piora o SL existente
+                    pos.sl_price = max(pos.sl_price or 0.0, locked_sl)
+
+                    db.update_position_sl_tp(
+                        trade_id=pos.trade_id,
+                        sl_price=pos.sl_price,
+                        tp_triggered=True
+                    )
+                    logger.info(
+                        f"{Colors.MAGENTA}🔥 TP TRIGGERED (YES){Colors.RESET} "
+                        f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                        f"at YES={current_yes:.4f}. "
+                        f"Lock-in SL={Colors.GREEN}{pos.sl_price:.4f}{Colors.RESET} "
+                        f"(80% lucro garantido). Trailing ON."
+                    )
+            else:
+                # NO: SL (acima), TP (abaixo) - Referência YES Price
+                if pos.sl_price is not None and current_yes >= pos.sl_price:
+                    gap_warn = " [GAP]" if current_yes > pos.sl_price + 0.05 else ""
+                    label = ("Trailing Exit" if pos.tp_triggered else "SL") + gap_warn
+                    exits.append((pos, label, current_yes))
+                elif not pos.tp_triggered and pos.tp_price is not None and current_yes <= pos.tp_price:
+                    # ── GATILHO TP -> TRAILING (NO) ───────────────────────────────
+                    pos.tp_triggered = True
+                    pos.trailing_enabled = True
+                    pos.trailing_distance = 0.025
+
+                    # LOCK-IN IMEDIATO (Catraca): garante 80% do lucro acumulado.
+                    # Para NO, entry_yes = 1 - entry_token. Lucro quando YES cai.
+                    entry_yes_no = 1.0 - pos.entry_price
+                    locked_sl = entry_yes_no - (entry_yes_no - current_yes) * 0.80
+                    # Catraca inicial: nunca piora o SL existente (SL é teto, nunca pode subir)
+                    pos.sl_price = min(pos.sl_price or 1.0, locked_sl)
+
+                    db.update_position_sl_tp(
+                        trade_id=pos.trade_id,
+                        sl_price=pos.sl_price,
+                        tp_triggered=True
+                    )
+                    logger.info(
+                        f"{Colors.MAGENTA}🔥 TP TRIGGERED (NO){Colors.RESET} "
+                        f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                        f"at YES={current_yes:.4f}. "
+                        f"Lock-in SL={Colors.RED}{pos.sl_price:.4f}{Colors.RESET} "
+                        f"(80% lucro garantido). Trailing ON."
+                    )
 
         return exits
 
@@ -470,15 +508,20 @@ class ArenaRiskManager:
 
         if success:
             # PnL Calculation
-            # Se tenho shares (unidades), PnL = (Preço Saída - Preço Entrada) * Shares
-            # Ex: Comprei 100 shares @ 0.40 (Custo $40). Vendo @ 0.50 (Recebo $50). PnL = (0.50 - 0.40) * 100 = $10.
-            pnl = (exec_price - pos.entry_price) * pos.shares
-
+            # exec_price is the YES price from market (passed from check_sl_tp)
+            # pos.entry_price is the TOKEN price (amount / shares)
+            side = pos.direction.lower()
+            if side == 'yes':
+                pnl = (exec_price - pos.entry_price) * pos.shares
+            else:
+                # NO: Ganhamos quando o preço do YES CAI.
+                entry_yes = 1.0 - pos.entry_price
+                pnl = (entry_yes - exec_price) * pos.shares
+                
             pnl_pct = (pnl / pos.size_usd) * 100 if pos.size_usd else 0
 
             # Cores para Saída
             pnl_color = Colors.GREEN if pnl >= 0 else Colors.RED
-            # Motivo também ganha cor baseada no resultado (TP geralmente é verde, SL vermelho)
             reason_color = Colors.GREEN if pnl >= 0 else Colors.RED
 
             log_msg = (
@@ -489,22 +532,33 @@ class ArenaRiskManager:
                 f"(entry {Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET}) "
                 f"PnL: {pnl_color}{('+' if pnl >= 0 else '')}${pnl:.2f} ({pnl_pct:+.1f}%){Colors.RESET}"
             )
+            
+            # 1. Log to console
             logger.info(log_msg)
-            if self.telegram:
-                # Remove ANSI codes for Telegram (simple strip)
-                clean_msg = (
-                    log_msg.replace(Colors.GREEN, "")
-                    .replace(Colors.RED, "")
-                    .replace(Colors.YELLOW, "")
-                    .replace(Colors.BLUE, "")
-                    .replace(Colors.MAGENTA, "")
-                    .replace(Colors.CYAN, "")
-                    .replace(Colors.BOLD, "")
-                    .replace(Colors.RESET, "")
-                )
-                self.telegram.send_message(clean_msg)
+            
+            # 2. Telegram (Robustified)
+            try:
+                if self.telegram:
+                    # Remove ANSI codes for Telegram (simple strip)
+                    clean_msg = f"🆔 <b>ID:</b> <code>{pos.id}</code>\n" + (
+                        log_msg.replace(Colors.GREEN, "")
+                        .replace(Colors.RED, "")
+                        .replace(Colors.YELLOW, "")
+                        .replace(Colors.BLUE, "")
+                        .replace(Colors.MAGENTA, "")
+                        .replace(Colors.CYAN, "")
+                        .replace(Colors.BOLD, "")
+                        .replace(Colors.RESET, "")
+                    )
+                    self.telegram.send_message(clean_msg)
+            except Exception as e:
+                logger.error(f"Failed to send telegram notification for {pos.trade_id}: {e}")
 
-            db.resolve_trade(pos.trade_id, reason.lower(), pnl)
+            # 3. Database Resolution (CRITICAL)
+            try:
+                db.resolve_trade(pos.trade_id, reason.lower(), pnl)
+            except Exception as e:
+                logger.error(f"CRITICAL: Failed to resolve trade {pos.trade_id} in DB: {e}")
 
             if pos.trade_id in self.open_positions:
                 del self.open_positions[pos.trade_id]

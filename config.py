@@ -246,15 +246,17 @@ MEANREV_TP_PCT = _env_float("BOT_ARENA_MEANREV_TP_PCT", 0.18)
 GRACE_PERIOD_SECONDS = _env_int("BOT_ARENA_GRACE_PERIOD_SECONDS", 45)
 
 # Per-Bot SL/TP Enable/Disable
+# This matches substrings, so "mean_reversion" matches "mean_reversion-g4-179"
 ENABLE_SL_TP_PER_BOT = {
     "meanrev-v1": True,
     "meanrev-sl-v1": True,
     "meanrev-tp-v1": True,
-    "hybrid-v1": True,
-    "momentum-v1": True,
-    "updown-rsi-v3": True,
-    "sentiment-v1": True,
-    "orderflow-v1": True,
+    "mean_reversion": True,  # Ensures evolved bots get SL/TP
+    "hybrid": True,
+    "momentum": True,
+    "updown": True,
+    "sentiment": True,
+    "orderflow": True,
 }
 
 # Risk Config for Specific Bots (UpDown v3)
@@ -362,6 +364,19 @@ def get_fee_rate():
 def get_aggression_level() -> str:
     """Return configured aggression level: conservative|medium|aggressive"""
     a = (os.environ.get("TRADING_AGGRESSION") or TRADING_AGGRESSION or "medium").lower()
+
+    # Tenta ler do banco de dados (persistência do Telegram via /mode)
+    try:
+        import sqlite3
+        with sqlite3.connect(DB_PATH, timeout=1.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM arena_state WHERE key = 'trading_aggression'")
+            result = cursor.fetchone()
+            if result and result[0] in AGGRESSION_MULTIPLIERS:
+                a = result[0].lower()
+    except Exception:
+        pass
+
     if a not in AGGRESSION_MULTIPLIERS:
         return "medium"
     return a

@@ -128,7 +128,7 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
     <div class="section-title">Recent Trades</div>
     <div class="card">
         <table id="trades-table">
-            <thead><tr><th>Bot</th><th>Market</th><th>Side</th><th>Amount</th><th>P&L</th><th>Closes</th><th>Time</th></tr></thead>
+            <thead><tr><th>ID</th><th>Bot</th><th>Mercado</th><th>Lado</th><th>Tamanho ($)</th><th>Lucro %</th><th>Lucro $</th><th>Trig</th><th>Closes</th><th>Time</th></tr></thead>
             <tbody></tbody>
         </table>
     </div>
@@ -139,17 +139,19 @@ td { padding: 6px 4px; border-bottom: 1px solid #21262d; }
         <table id="open-positions-table" class="min-w-full bg-zinc-900 text-white text-sm">
             <thead>
                 <tr class="bg-zinc-800">
+                    <th class="px-4 py-3 text-left">ID</th>
                     <th class="px-4 py-3 text-left">Bot</th>
-                    <th class="px-4 py-3 text-left">Market</th>
-                    <th class="px-4 py-3 text-center">Side</th>
-                    <th class="px-4 py-3 text-right">Entry</th>
-                    <th class="px-4 py-3 text-right">Current</th>
+                    <th class="px-4 py-3 text-center">Lado</th>
+                    <th class="px-4 py-3 text-right">Tamanho ($)</th>
+                    <th class="px-4 py-3 text-right">Preço_At</th>
+                    <th class="px-4 py-3 text-right">Lucro %</th>
+                    <th class="px-4 py-3 text-right">Lucro $</th>
+                    <th class="px-4 py-3 text-center">Trig</th>
+                    <th class="px-4 py-3 text-left">Mercado</th>
                     <th class="px-4 py-3 text-right">SL</th>
                     <th class="px-4 py-3 text-right">TP</th>
                     <th class="px-4 py-3 text-right">Dist. TP</th>
                     <th class="px-4 py-3 text-right">Dist. SL</th>
-                    <th class="px-4 py-3 text-right">Size USD</th>
-                    <th class="px-4 py-3 text-center">Trailing</th>
                 </tr>
             </thead>
             <tbody id="open-positions-body" class="text-zinc-300">
@@ -318,11 +320,14 @@ function updateTrades(trades) {
     const tbody = document.querySelector('#trades-table tbody');
     tbody.innerHTML = trades.slice(0, 20).map(t => `
         <tr>
+            <td><code>${t.trade_id_display}</code></td>
             <td>${t.bot_name}</td>
             <td>${(t.market_question || '').slice(0, 40)}</td>
             <td>${t.side}</td>
             <td>$${(t.amount_display != null ? t.amount_display : ((t.amount || 0) < 0.01 ? (t.amount || 0).toFixed(4) : (t.amount || 0).toFixed(2)))}</td>
+            <td class="${pnlClass(t.pnl)}">${t.pnl_pct != null ? (t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct + '%' : '0.00%'}</td>
             <td class="${pnlClass(t.pnl)}">${t.pnl != null ? (t.pnl_display != null ? t.pnl_display : fmtPnl(t.pnl)) : 'pending'}</td>
+            <td class="text-center">${t.trailing || '❌'}</td>
             <td>${fmtClose(t)}</td>
             <td>${fmtTradeTime(t.created_at)}</td>
         </tr>
@@ -338,6 +343,9 @@ async function loadOpenPositions() {
   
     const positions = data.positions || [];
     positions.forEach(p => {
+      const pnl_pct = p.pnl_pct || 0;
+      const pnl_usd = p.pnl_usd || 0;
+      
       const isNearTP = p.tp_dist !== null && p.tp_dist < 3;
       const isNearSL = p.sl_dist !== null && p.sl_dist < 2;
   
@@ -346,17 +354,19 @@ async function loadOpenPositions() {
       const tr = document.createElement('tr');
       tr.className = `hover:bg-zinc-800 ${rowClass}`;
       tr.innerHTML = `
+        <td class="px-4 py-3"><code>${p.trade_id}</code></td>
         <td class="px-4 py-3">${p.bot_name}</td>
-        <td class="px-4 py-3">${p.market}</td>
         <td class="px-4 py-3 text-center font-bold ${p.side === 'YES' ? 'text-green-400' : 'text-red-400'}">${p.side}</td>
-        <td class="px-4 py-3 text-right">${p.entry}</td>
+        <td class="px-4 py-3 text-right">$${p.size_usd}</td>
         <td class="px-4 py-3 text-right font-mono">${p.current || '—'}</td>
+        <td class="px-4 py-3 text-right font-bold ${pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'}">${pnl_pct >= 0 ? '+' : ''}${pnl_pct}%</td>
+        <td class="px-4 py-3 text-right font-bold ${pnl_usd >= 0 ? 'text-green-400' : 'text-red-400'}">${pnl_usd >= 0 ? '+$' : '-$'}${Math.abs(pnl_usd).toFixed(2)}</td>
+        <td class="px-4 py-3 text-center">${p.trailing}</td>
+        <td class="px-4 py-3">${p.market}</td>
         <td class="px-4 py-3 text-right text-red-400 font-bold">${p.sl_display}</td>
         <td class="px-4 py-3 text-right text-emerald-400 font-bold">${p.tp_display}</td>
         <td class="px-4 py-3 text-right ${p.tp_dist !== null && p.tp_dist > 0 ? 'text-emerald-400' : 'text-zinc-400'}">${p.tp_dist !== null ? p.tp_dist + '%' : '—'}</td>
         <td class="px-4 py-3 text-right ${p.sl_dist !== null && p.sl_dist > 0 ? 'text-red-400' : 'text-zinc-400'}">${p.sl_dist !== null ? p.sl_dist + '%' : '—'}</td>
-        <td class="px-4 py-3 text-right">$${p.size_usd}</td>
-        <td class="px-4 py-3 text-center">${p.trailing}</td>
       `;
       tbody.appendChild(tr);
     });

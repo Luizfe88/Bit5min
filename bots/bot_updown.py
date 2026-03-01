@@ -110,16 +110,19 @@ class UpDownBot(BaseBot):
         if best_bid > 0 and best_ask > 0:
             mid_price = (best_bid + best_ask) / 2
             spread_pct = (best_ask - best_bid) / mid_price * 100
-            max_spread = config.MARKET_FILTER["max_spread_percent"]
+        else:
+            # Fallback for Simmer context spread
+            spread_pct = signals.get("orderflow", {}).get("spread_pct")
 
+        if spread_pct is not None:
+            max_spread = config.MARKET_FILTER["max_spread_percent"]
             if spread_pct > max_spread:
                 return self._hold(
-                    f"Spread {spread_pct:.1f}% > {max_spread}% → mercado rejeitado"
+                    f"Spread {spread_pct:.2f}% > {max_spread}% → mercado rejeitado"
                 )
         else:
-            # Se não temos dados de book, assumimos risco ou hold?
-            # Por segurança, melhor pular se não sabemos o spread
-            # Mas em backtest/paper pode faltar esse dado.
+            # Se não temos dados de book nem orderflow spread, assumimos risco ou hold?
+            # Por segurança, melhor pular se não sabemos o spread em live
             pass
 
         # 2. Dados de Preço e Indicadores

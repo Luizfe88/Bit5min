@@ -208,7 +208,10 @@ class TelegramNotifier:
             side = details.get("side", "unknown")
             market = details.get("market", "unknown")
             
+            trade_id = details.get("trade_id", "unknown")
+            
             message = f"{emoji} <b>{title}</b>\n\n"
+            message += f"🆔 <b>ID:</b> <code>{trade_id}</code>\n"
             message += f"🤖 <b>Bot:</b> {bot_name}\n"
             message += f"📅 <b>Data/Hora:</b> {brt_time}\n"
             message += f"💰 <b>Valor:</b> ${amount:.2f}\n"
@@ -264,7 +267,7 @@ class TelegramNotifier:
         message = self.format_bot_status_message(bot_name, "resumed", {})
         return self.send_message(message)
     
-    def notify_trade_executed(self, bot_name: str, amount: float, side: str, market: str) -> bool:
+    def notify_trade_executed(self, bot_name: str, amount: float, side: str, market: str, trade_id: str = "unknown") -> bool:
         """Send notification when a trade is executed.
         
         Args:
@@ -272,6 +275,7 @@ class TelegramNotifier:
             amount: Trade amount
             side: Trade side (yes/no)
             market: Market name
+            trade_id: Optional trade ID
             
         Returns:
             True if message was sent successfully
@@ -279,7 +283,8 @@ class TelegramNotifier:
         details = {
             "amount": amount,
             "side": side,
-            "market": market
+            "market": market,
+            "trade_id": trade_id
         }
         message = self.format_bot_status_message(bot_name, "trade_executed", details)
         return self.send_message(message)

@@ -167,7 +167,7 @@ class BaseBot(ABC):
         raw_signal = self.analyze(market, signals)
         strat = 0.0
         if raw_signal.get("action") != "hold":
-            side = raw_signal.get("side")
+            side = raw_signal.get("side", "").lower()
             conf = raw_signal.get("confidence", 0.0) or 0.0
             strat = (1.0 if side == "yes" else -1.0) * float(conf)
 
@@ -225,7 +225,8 @@ class BaseBot(ABC):
             ev_yes = (p_yes - p_eff_yes) / max(1e-9, p_eff_yes)
             ev_no = ((1.0 - p_yes) - p_eff_no) / max(1e-9, p_eff_no)
             side = "yes" if ev_yes >= ev_no else "no"
-            best_ev = ev_yes if side == "yes" else ev_no
+            side_lower = side.lower()
+            best_ev = ev_yes if side_lower == "yes" else ev_no
             return ev_yes, ev_no, best_ev, side
 
         ev_yes, ev_no, best_ev, side = calculate_real_edge_after_fees(
@@ -247,9 +248,13 @@ class BaseBot(ABC):
             except Exception:
                 spread_pct = None
 
+            if spread_pct is None:
+                # Fallback for Simmer context spread
+                spread_pct = signals.get("orderflow", {}).get("spread_pct")
+
             reason_text = f"No edge after costs: p_yes={p_yes:.3f} mkt={market_price:.3f} ev_yes={ev_yes:.2%} ev_no={ev_no:.2%}"
             logger.info(
-                f"[{self.name}] SKIP: {reason_text} | min_ev={min_ev:.4f} | spread_pct={spread_pct if spread_pct is not None else 'N/A'}"
+                f"[{self.name}] SKIP: {reason_text} | min_ev={min_ev:.4f} | spread_pct={f'{spread_pct:.2f}%' if spread_pct is not None else 'N/A'}"
             )
             return {
                 "action": "skip",
@@ -707,6 +712,7 @@ class BaseBot(ABC):
                         tp_price=tp_price,
                         confidence=signal.get("confidence", 0.0),
                         trade_id=trade_id,
+                        id=result.get("db_id"), # NEW: Pass the DB row ID
                         shares=shares,
                         token_id=token_id,
                         # Trailing TP Configuration
@@ -844,6 +850,7 @@ class BaseBot(ABC):
                 enable_sl_tp=getattr(self, "enable_sl_tp", False),
                 sl_pct=getattr(self, "sl_pct", 0.0),
                 tp_pct=getattr(self, "tp_pct", 0.0),
+                side=signal["side"],
                 trailing_enabled=getattr(self, "trailing_enabled", False),
                 trailing_distance=getattr(self, "trailing_distance", 0.045)
             )
@@ -864,33 +871,43 @@ class BaseBot(ABC):
             import uuid
 
             trade_id = f"paper_{uuid.uuid4().hex[:8]}"
-            db.log_trade(
+            # Log to Database
+            db_id = db.log_trade(
                 bot_name=self.name,
-                market_id=market_id,
-                market_question=market.get("question"),
+                market_id=m_id,
                 side=signal["side"],
                 amount=amount,
                 venue="local_paper",
                 mode=mode,
                 confidence=signal.get("confidence"),
                 reasoning=signal.get("reasoning"),
+                market_question=market.get("question") or m_id,
                 trade_id=trade_id,
                 shares_bought=shares,
                 trade_features=signal.get("features"),
-                sl_price=signal["sl_price"],   # FIX: Agora persistidos corretamente
-                tp_price=signal["tp_price"],   # FIX: Agora persistidos corretamente
+                sl_price=signal["sl_price"],
+                tp_price=signal["tp_price"],
             )
 
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
             logger.info(
                 f"[{self.name}] Local PAPER trade saved: {signal['side']} ${amt_s} shares={shares} fill_price={fill_price:.4f} (slippage impact) on {market.get('question', '')[:50]}"
             )
+            
+            # Send Telegram notification for trade execution
+            telegram = get_telegram_notifier()
+            if telegram:
+                telegram.notify_trade_executed(
+                    self.name, amount, signal["side"], market.get("question", ""), str(db_id)
+                )
 
             return {
                 "success": True,
-                "trade_id": trade_id,
+                "price": fill_price,
                 "shares_bought": shares,
-                "price": fill_price,  # Retorna fill_price em vez de current_price
+                "trade_id": trade_id,
+                "db_row_id": db_id, # Retornamos para registrar no RiskManager
+                "db_id": db_id, # Alias
             }
 
         except Exception as e:
@@ -927,6 +944,7 @@ class BaseBot(ABC):
                 enable_sl_tp=getattr(self, "enable_sl_tp", False),
                 sl_pct=getattr(self, "sl_pct", 0.0),
                 tp_pct=getattr(self, "tp_pct", 0.0),
+                side=signal["side"],
                 trailing_enabled=getattr(self, "trailing_enabled", False),
                 trailing_distance=getattr(self, "trailing_distance", 0.045)
             )
@@ -942,24 +960,35 @@ class BaseBot(ABC):
             signal["sl_price"] = sl_tp_dict["sl_price"]
             signal["tp_price"] = sl_tp_dict["tp_price"]
 
-            db.log_trade(
+            # Log successful trade to database
+            db_id = db.log_trade(
                 bot_name=self.name,
                 market_id=market.get("id") or market.get("market_id"),
-                market_question=market.get("question"),
                 side=signal["side"],
                 amount=amount,
                 venue="polymarket",
-                mode=mode,
-                confidence=signal["confidence"],
+                mode="live",
+                confidence=signal.get("confidence"),
                 reasoning=signal.get("reasoning"),
+                market_question=market.get("question") or market.get("id") or market.get("market_id"),
                 trade_id=result.get("order_id"),
-                shares_bought=result.get("size"),
-                sl_price=signal["sl_price"],
-                tp_price=signal["tp_price"],
+                shares_bought=float(result.get("size") or 0),
+                trade_features=signal.get("features"),
+                sl_price=signal.get("sl_price"),
+                tp_price=signal.get("tp_price"),
             )
+            
+            result["db_id"] = db_id # Inject DB id into result
             logger.info(
                 f"[{self.name}] LIVE trade: {signal['side']} ${amount} at {result.get('price')} on {market.get('question', '')[:50]}"
             )
+            
+            # Send Telegram notification for trade execution
+            telegram = get_telegram_notifier()
+            if telegram:
+                telegram.notify_trade_executed(
+                    self.name, amount, signal["side"], market.get("question", ""), str(db_id)
+                )
 
         else:
             logger.error(f"[{self.name}] LIVE trade failed: {result.get('error')}")
