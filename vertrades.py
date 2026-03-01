@@ -39,7 +39,7 @@ def get_simmer_prices() -> Dict[str, float]:
         resp = requests.get(
             f"{config.SIMMER_BASE_URL}/api/sdk/markets",
             headers=headers,
-            params={"status": "active", "limit": 200},
+            params={"status": "active", "limit": 1000},
             timeout=10
         )
         
@@ -134,19 +134,24 @@ def ver_abertas():
                 
                 pnl_pcts.append(p_pct)
                 pnl_usds.append(p_usd)
-                ativos.append(f"{current_token_price:.3f}")
+                ativos.append(f"{current_token_price:.4f}")
             else:
                 pnl_pcts.append(0.0)
                 pnl_usds.append(0.0)
-                ativos.append("N/A")
+                if shares <= 0:
+                    ativos.append("0-SHR")
+                else:
+                    ativos.append("MISS")
 
         df['Preço_At'] = ativos
         df['Lucro %'] = [format_pnl_pct(p) for p in pnl_pcts]
         df['Lucro $'] = [format_pnl_usd(p) for p in pnl_usds]
+        df['SL'] = df['current_sl'].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
+        df['TP'] = df['current_tp'].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
         df['Trig'] = trailing_status
 
         # Selecionar colunas legíveis para o humano
-        cols_to_show = ['id', 'bot_name', 'side', 'amount', 'Preço_At', 'Lucro %', 'Lucro $', 'Trig', 'market_question']
+        cols_to_show = ['id', 'bot_name', 'side', 'amount', 'Preço_At', 'Lucro %', 'Lucro $', 'SL', 'TP', 'Trig', 'market_question']
         rename_map = {
             'id': 'ID',
             'bot_name': 'Bot',
