@@ -17,6 +17,7 @@ class OpenPosition:
     shares: float = 0.0  # Quantidade de shares compradas
     token_id: Optional[str] = None # Para facilitar venda
     grace_period_ends_at: Optional[float] = None  # Timestamp até quando ignorar SL/TP
+    breakeven_triggered: bool = False  # Indica se o SL já foi movido para o entry_price
     
     # Trailing TP Configuration
     trailing_enabled: bool = False

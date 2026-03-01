@@ -562,63 +562,15 @@ class BaseBot(ABC):
                 self._pause_reason = "daily_loss_limit"
             return {"success": False, "reason": reason}
 
-        # --- SL/TP Calculation (Centralized - Pre-Execution) ---
-        # Calcular SL/TP antes de executar para salvar no DB corretamente
-        sl_price = signal.get("sl_price")
-        tp_price = signal.get("tp_price")
-
-        # 1. Tentar estimar preço de entrada para cálculo de SL/TP relativos
-        est_entry_price = current_price
-        if est_entry_price <= 0:
-            est_entry_price = 0.5  # Fallback seguro
-
-        # TRAILING TP IMPLEMENTATION
-        if self.trailing_enabled:
-            # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
-            # Inicializamos ele com uma distância segura da entrada estimada
-            if tp_price is None and est_entry_price > 0:
-                tp_price = max(0.001, est_entry_price - self.trailing_distance)
-
-            # Ainda podemos ter um SL fixo de emergência (ex: -25%)
-            if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
-                sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
-
-        # TRAILING TP IMPLEMENTATION
-        if self.trailing_enabled:
-            # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
-            # Inicializamos ele com uma distância segura da entrada estimada
-            if tp_price is None and est_entry_price > 0:
-                tp_price = max(0.001, est_entry_price - self.trailing_distance)
-
-            # Ainda podemos ter um SL fixo de emergência (ex: -25%)
-            if sl_price is None and self.enable_sl_tp and est_entry_price > 0:
-                sl_price = max(0.001, est_entry_price * (1.0 + self.sl_pct))
-
-            logger.info(
-                f"[{self.name}] Trailing TP Init: Entry={est_entry_price:.3f}, Floor={tp_price:.3f}, Dist={self.trailing_distance:.3f}"
-            )
-
-        elif self.enable_sl_tp and sl_price is None and tp_price is None:
-            # Calculate based on estimated entry price if enabled and not provided by signal
-            if est_entry_price > 0:
-                # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.75 = 0.375 (-25%)
-                # Note: self.sl_pct is negative (e.g. -0.25)
-                calc_sl = est_entry_price * (1.0 + self.sl_pct)
-                # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
-                calc_tp = est_entry_price * (1.0 + self.tp_pct)
-
-                # Safety bounds (0.001 - 0.999)
-                sl_price = max(0.001, min(0.999, calc_sl))
-                tp_price = max(0.001, min(0.999, calc_tp))
-
-                logger.info(
-                    f"[{self.name}] SL/TP Calculated: Entry={est_entry_price:.3f}, SL={sl_price:.3f} ({self.sl_pct:.0%}), TP={tp_price:.3f} ({self.tp_pct:.0%})"
-                )
-
+        # --- SL/TP Calculation Delegates ---
+        # A lógica para SL/TP agora ocorre dinamicamente dentro dos 
+        # métodos _execute_live e _execute_paper usando o RiskManager centralizado,
+        # após sabermos o real fill_price (Slippage ou Real Price).
+        
         try:
             if mode == "live":
                 result = self._execute_live(
-                    signal, market, amount, mode, sl_price=sl_price, tp_price=tp_price
+                    signal, market, amount, mode
                 )
             else:
                 result = self._execute_paper(
@@ -626,9 +578,7 @@ class BaseBot(ABC):
                     market,
                     amount,
                     venue,
-                    mode,
-                    sl_price=sl_price,
-                    tp_price=tp_price,
+                    mode
                 )
 
             # --- Registrar Posição no RiskManager ---
@@ -746,30 +696,6 @@ class BaseBot(ABC):
                     sl_price = signal.get("sl_price")
                     tp_price = signal.get("tp_price")
 
-                    # TRAILING TP IMPLEMENTATION
-                    if self.trailing_enabled:
-                        # Se trailing estiver ativo, o TP funciona como um Stop Loss móvel (Floor)
-                        # Inicializamos ele com uma distância segura da entrada
-                        if tp_price is None and entry_price > 0:
-                            tp_price = max(0.001, entry_price - self.trailing_distance)
-
-                        # Ainda podemos ter um SL fixo de emergência (ex: -25%)
-                        if sl_price is None and self.enable_sl_tp and entry_price > 0:
-                            sl_price = max(0.001, entry_price * (1.0 + self.sl_pct))
-
-                    elif self.enable_sl_tp and sl_price is None and tp_price is None:
-                        # Calculate based on entry price if enabled and not provided by signal
-                        if entry_price > 0:
-                            # SL is entry * (1 + sl_pct) -> e.g. 0.50 * 0.75 = 0.375 (-25%)
-                            # Note: self.sl_pct is negative (e.g. -0.25)
-                            calc_sl = entry_price * (1.0 + self.sl_pct)
-                            # TP is entry * (1 + tp_pct) -> e.g. 0.50 * 1.18 = 0.59 (+18%)
-                            calc_tp = entry_price * (1.0 + self.tp_pct)
-
-                            # Safety bounds (0.001 - 0.999)
-                            sl_price = max(0.001, min(0.999, calc_sl))
-                            tp_price = max(0.001, min(0.999, calc_tp))
-
                     pos = OpenPosition(
                         market_id=market.get("id") or market.get("market_id"),
                         bot_name=self.name,
@@ -855,7 +781,7 @@ class BaseBot(ABC):
                 telegram.notify_bot_resumed(self.name)
 
     def _execute_paper(
-        self, signal, market, amount, venue, mode, sl_price=None, tp_price=None
+        self, signal, market, amount, venue, mode
     ):
         """Local paper execution: calculate shares and persist locally.
 
@@ -913,18 +839,26 @@ class BaseBot(ABC):
             # O sistema até agora estava enviando sl_price=None ou calculando base no old current_price.
             # O db recebia campos nulls pois recálculo não estava sincronizado com o db persist aqui no paper.
             
-            if self.enable_sl_tp:
-                # O preço da minha posição de entrada é estritamente fill_price.
-                if self.trailing_enabled:
-                    if tp_price is None and fill_price > 0:
-                        tp_price = max(0.001, fill_price - getattr(self, "trailing_distance", 0.045))
-                    if sl_price is None and self.enable_sl_tp and fill_price > 0:
-                        sl_price = max(0.001, fill_price * (1.0 + self.sl_pct))
-                elif sl_price is None and tp_price is None:
-                    calc_sl = fill_price * (1.0 + self.sl_pct)
-                    calc_tp = fill_price * (1.0 + self.tp_pct)
-                    sl_price = max(0.001, min(0.999, calc_sl))
-                    tp_price = max(0.001, min(0.999, calc_tp))
+            sl_tp_dict = risk_manager.calculate_sl_tp(
+                fill_price=fill_price,
+                enable_sl_tp=getattr(self, "enable_sl_tp", False),
+                sl_pct=getattr(self, "sl_pct", 0.0),
+                tp_pct=getattr(self, "tp_pct", 0.0),
+                trailing_enabled=getattr(self, "trailing_enabled", False),
+                trailing_distance=getattr(self, "trailing_distance", 0.045)
+            )
+            
+            # --- DEFAULT/FALLBACK VALIDATION ---
+            # If SL/TP is enabled but calculate_sl_tp returned None, we force a fallback logic
+            if getattr(self, "enable_sl_tp", False):
+                if sl_tp_dict["sl_price"] is None:
+                    sl_tp_dict["sl_price"] = max(0.001, fill_price * 0.90)  # Emergência: 10% abaixo da entrada
+                    logger.warning(f"[{self.name}] Emergência SL ativado: {sl_tp_dict['sl_price']:.3f}")
+                if sl_tp_dict["tp_price"] is None:
+                    sl_tp_dict["tp_price"] = min(0.999, fill_price * 1.15)  # Emergência: 15% acima da entrada
+
+            signal["sl_price"] = sl_tp_dict["sl_price"]
+            signal["tp_price"] = sl_tp_dict["tp_price"]
             
             # Persist trade locally in DB (no external order placed)
             import uuid
@@ -943,8 +877,8 @@ class BaseBot(ABC):
                 trade_id=trade_id,
                 shares_bought=shares,
                 trade_features=signal.get("features"),
-                sl_price=sl_price,   # FIX: Agora persistidos corretamente
-                tp_price=tp_price,   # FIX: Agora persistidos corretamente
+                sl_price=signal["sl_price"],   # FIX: Agora persistidos corretamente
+                tp_price=signal["tp_price"],   # FIX: Agora persistidos corretamente
             )
 
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
@@ -963,7 +897,7 @@ class BaseBot(ABC):
             logger.error(f"[{self.name}] Local paper trade failed: {e}")
             return {"success": False, "reason": str(e)}
 
-    def _execute_live(self, signal, market, amount, mode, sl_price=None, tp_price=None):
+    def _execute_live(self, signal, market, amount, mode):
         """Execute directly on Polymarket CLOB (live trading)."""
         import polymarket_client
 
@@ -986,6 +920,28 @@ class BaseBot(ABC):
         )
 
         if result.get("success"):
+            fill_price = float(result.get("price") or 0.0)
+            
+            sl_tp_dict = risk_manager.calculate_sl_tp(
+                fill_price=fill_price,
+                enable_sl_tp=getattr(self, "enable_sl_tp", False),
+                sl_pct=getattr(self, "sl_pct", 0.0),
+                tp_pct=getattr(self, "tp_pct", 0.0),
+                trailing_enabled=getattr(self, "trailing_enabled", False),
+                trailing_distance=getattr(self, "trailing_distance", 0.045)
+            )
+
+            # --- DEFAULT/FALLBACK VALIDATION ---
+            if getattr(self, "enable_sl_tp", False):
+                if sl_tp_dict["sl_price"] is None:
+                    sl_tp_dict["sl_price"] = max(0.001, fill_price * 0.90)  # Emergência: 10% abaixo
+                    logger.warning(f"[{self.name}] Emergência SL ativado: {sl_tp_dict['sl_price']:.3f} (LIVE)")
+                if sl_tp_dict["tp_price"] is None:
+                    sl_tp_dict["tp_price"] = min(0.999, fill_price * 1.15)  # Emergência: 15% acima
+            
+            signal["sl_price"] = sl_tp_dict["sl_price"]
+            signal["tp_price"] = sl_tp_dict["tp_price"]
+
             db.log_trade(
                 bot_name=self.name,
                 market_id=market.get("id") or market.get("market_id"),
@@ -998,8 +954,8 @@ class BaseBot(ABC):
                 reasoning=signal.get("reasoning"),
                 trade_id=result.get("order_id"),
                 shares_bought=result.get("size"),
-                sl_price=sl_price,
-                tp_price=tp_price,
+                sl_price=signal["sl_price"],
+                tp_price=signal["tp_price"],
             )
             logger.info(
                 f"[{self.name}] LIVE trade: {signal['side']} ${amount} at {result.get('price')} on {market.get('question', '')[:50]}"

@@ -2,8 +2,10 @@ import sqlite3
 import json
 import os
 
+import config
+
 # Caminho para o seu banco de dados
-DB_PATH = r"C:\Users\luizf\Documents\polymarket\polymarket-bot-arena-main\bot_arena_paper_test_10.db"
+DB_PATH = str(config.DB_PATH)
 
 def mostrar_evolucao():
     if not os.path.exists(DB_PATH):

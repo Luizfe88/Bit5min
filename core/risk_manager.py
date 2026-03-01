@@ -151,6 +151,35 @@ class ArenaRiskManager:
 
         return True, "ok"
 
+    def calculate_sl_tp(
+        self,
+        fill_price: float,
+        enable_sl_tp: bool,
+        sl_pct: float,
+        tp_pct: float,
+        trailing_enabled: bool = False,
+        trailing_distance: float = 0.045
+    ) -> Dict[str, Optional[float]]:
+        """
+        Calcula os valores de SL e TP com base no fill_price.
+        Retorna explicitamente um dicionário com 'sl_price' e 'tp_price'.
+        """
+        sl_price = None
+        tp_price = None
+
+        if enable_sl_tp and fill_price > 0:
+            if trailing_enabled:
+                tp_price = max(0.001, fill_price - trailing_distance)
+                sl_price = max(0.001, fill_price * (1.0 + sl_pct))
+            else:
+                calc_sl = fill_price * (1.0 + sl_pct)
+                calc_tp = fill_price * (1.0 + tp_pct)
+                # Mantém dentro de limites seguros 0.1% a 99.9%
+                sl_price = max(0.001, min(0.999, calc_sl))
+                tp_price = max(0.001, min(0.999, calc_tp))
+                
+        return {"sl_price": sl_price, "tp_price": tp_price}
+
     def _handle_pause(self, bot_name: str, reason: str, current: float, limit: float):
         logger.warning(f"[{bot_name}] {reason} → ${current:.2f} >= ${limit:.2f}")
         if self.telegram:
@@ -240,8 +269,8 @@ class ArenaRiskManager:
         )
 
         # Cores para SL/TP
-        sl_val = f"{pos.sl_price:.3f}" if pos.sl_price else "None"
-        tp_val = f"{pos.tp_price:.3f}" if pos.tp_price else "None"
+        sl_val = f"{pos.sl_price:.3f}" if pos.sl_price is not None else "None"
+        tp_val = f"{pos.tp_price:.3f}" if pos.tp_price is not None else "None"
         sl_str = f"SL={Colors.RED}{sl_val}{Colors.RESET}"
         tp_str = f"TP={Colors.GREEN}{tp_val}{Colors.RESET}"
 
@@ -296,6 +325,13 @@ class ArenaRiskManager:
             # Aplica step mínimo para evitar spam de logs/updates
             if (potential_tp - old_tp) >= step:
                 pos.tp_price = potential_tp
+                
+                try:
+                    # Sync to database explicitly
+                    db.update_position_sl_tp(trade_id=pos.trade_id, tp_price=pos.tp_price)
+                except Exception as e:
+                    logger.error(f"Failed to update trailing TP in DB for {pos.trade_id}: {e}")
+
                 logger.info(
                     f"{Colors.MAGENTA}[TRAILING]{Colors.RESET} "
                     f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
@@ -342,6 +378,29 @@ class ArenaRiskManager:
 
             # Bounds check
             my_price = max(0.001, min(0.999, my_price))
+
+            # --- BREAKEVEN AUTOMÁTICO (50% do caminho para o TP) ---
+            if not pos.trailing_enabled and pos.tp_price is not None and pos.entry_price is not None:
+                if pos.tp_price > pos.entry_price and not getattr(pos, "breakeven_triggered", False):
+                    dist_to_tp = pos.tp_price - pos.entry_price
+                    breakeven_trigger = pos.entry_price + (dist_to_tp * 0.5)
+                    
+                    if my_price >= breakeven_trigger:
+                        pos.sl_price = pos.entry_price
+                        pos.breakeven_triggered = True
+                        
+                        logger.info(
+                            f"{Colors.CYAN}[BREAKEVEN]{Colors.RESET} "
+                            f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
+                            f"atingiu 50% do TP. SL movido para a entrada {Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET} "
+                            f"(Price: {Colors.YELLOW}{my_price:.3f}{Colors.RESET})"
+                        )
+                        
+                        try:
+                            # Update directly in DB
+                            db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price)
+                        except Exception as e:
+                            logger.error(f"Failed to update breakeven in DB for {pos.trade_id}: {e}")
 
             # --- TRAILING TP UPDATE ---
             if pos.trailing_enabled:

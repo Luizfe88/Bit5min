@@ -2,8 +2,10 @@ import sqlite3
 import pandas as pd
 import os
 
+import config
+
 # Caminho do banco (ajuste se necessário)
-DB_PATH = "bot_arena_paper_test_10.db"
+DB_PATH = str(config.DB_PATH)
 
 def ver_abertas():
     if not os.path.exists(DB_PATH):

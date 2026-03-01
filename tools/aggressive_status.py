@@ -32,44 +32,44 @@ def check_configuration():
 
     try:
         agg = config.get_aggression_level()
-        print(f"✓ Aggression Level: {agg.upper()}")
+        print(f"[OK] Aggression Level: {agg.upper()}")
 
         if agg != "aggressive":
-            print(f"  ⚠️  AVISO: Modo é '{agg}', não 'aggressive'")
+            print(f"  [!]  AVISO: Modo é '{agg}', não 'aggressive'")
             print(f"     Edite .env: TRADING_AGGRESSION=aggressive")
             return False
 
         min_conf = config.get_min_confidence()
-        print(f"✓ MIN_CONFIDENCE: {min_conf:.2f} (esperado: 0.48)")
+        print(f"[OK] MIN_CONFIDENCE: {min_conf:.2f} (esperado: 0.48)")
         if min_conf != 0.48:
-            print(f"  ⚠️  AVISO: Esperado 0.48, encontrado {min_conf:.2f}")
+            print(f"  [!]  AVISO: Esperado 0.48, encontrado {min_conf:.2f}")
 
         min_edge = config.get_min_edge_after_fees()
-        print(f"✓ MIN_EDGE_AFTER_FEES: {min_edge:.6f} (0.12% = 0.0012)")
+        print(f"[OK] MIN_EDGE_AFTER_FEES: {min_edge:.6f} (0.12% = 0.0012)")
         if min_edge != 0.0012:
-            print(f"  ⚠️  AVISO: Esperado 0.0012, encontrado {min_edge:.6f}")
+            print(f"  [!]  AVISO: Esperado 0.0012, encontrado {min_edge:.6f}")
 
         max_spread = config.get_max_spread_allowed()
-        print(f"✓ MAX_SPREAD_ALLOWED: {max_spread:.1f}% (esperado: 2.1%)")
+        print(f"[OK] MAX_SPREAD_ALLOWED: {max_spread:.1f}% (esperado: 2.1%)")
         if max_spread != 2.1:
-            print(f"  ⚠️  AVISO: Esperado 2.1, encontrado {max_spread:.1f}")
+            print(f"  [!]  AVISO: Esperado 2.1, encontrado {max_spread:.1f}")
 
         max_trades = config.get_max_trades_per_hour_per_bot()
-        print(f"✓ MAX_TRADES_PER_HOUR: {max_trades} (hard-cap agressivo)")
+        print(f"[OK] MAX_TRADES_PER_HOUR: {max_trades} (hard-cap agressivo)")
         if max_trades > 12:
-            print(f"  ⚠️  AVISO: Esperado ≤12, encontrado {max_trades}")
+            print(f"  [!]  AVISO: Esperado ≤12, encontrado {max_trades}")
 
         mode = config.get_current_mode()
-        print(f"✓ Trading Mode: {mode.upper()}")
+        print(f"[OK] Trading Mode: {mode.upper()}")
         if mode != "paper":
             print(
-                f"  ⚠️  ATENÇÃO: Está em '{mode}' mode. Recomenda-se paper para teste!"
+                f"  [!]  ATENÇÃO: Está em '{mode}' mode. Recomenda-se paper para teste!"
             )
 
         return agg == "aggressive"
 
     except Exception as e:
-        print(f"❌ Erro ao verificar config: {e}")
+        print(f"[X] Erro ao verificar config: {e}")
         return False
 
 
@@ -103,18 +103,18 @@ def check_trades_volume():
                 ORDER BY c DESC
             """).fetchall()
 
-        print(f"✓ Total Trades (24h): {total_count}")
+        print(f"[OK] Total Trades (24h): {total_count}")
         print(f"  - Resolvidos: {resolved_count}")
         print(f"  - Pendentes: {total_count - resolved_count}")
 
         if total_count < 10:
-            print(f"  ⚠️  BAIXO VOLUME: Esperado >80 trades em 24h")
+            print(f"  [!]  BAIXO VOLUME: Esperado >80 trades em 24h")
         elif total_count < 80:
-            print(f"  ⚠️  VOLUME MODERADO: Alvo é >80 trades")
+            print(f"  [!]  VOLUME MODERADO: Alvo é >80 trades")
         else:
-            print(f"  ✅ VOLUME OK: {total_count} trades em 24h")
+            print(f"  [OK] VOLUME OK: {total_count} trades em 24h")
 
-        print(f"\n✓ Trades por Bot (24h):")
+        print(f"\n[OK] Trades por Bot (24h):")
         for row in by_bot:
             bot = row["bot_name"]
             cnt = row["c"]
@@ -128,43 +128,50 @@ def check_trades_volume():
         return total_count >= 10
 
     except Exception as e:
-        print(f"❌ Erro ao verificar trades: {e}")
+        print(f"[X] Erro ao verificar trades: {e}")
         return False
 
 
 def check_recent_skips():
-    """Check recent SKIP/rejection reasons."""
-    print_header("3. ANALISE DE REJEIÇÕES (últimas 50 SKIP)")
+    """Check recent SKIP/rejection reasons directly from logs."""
+    print_header("3. ANALISE DE REJEIÇÕES (últimas do log)")
 
     try:
-        with db.get_conn() as conn:
-            skips = conn.execute("""
-                SELECT bot_name, reasoning, COUNT(*) as c
-                FROM trades
-                WHERE outcome IS NULL AND action='skip' 
-                      AND created_at >= datetime('now', '-1 hour')
-                GROUP BY reasoning
-                ORDER BY c DESC
-                LIMIT 10
-            """).fetchall()
-
-        if not skips:
-            print("✓ Sem rejeções recentes (última 1h) - bom sinal!")
+        log_file = Path(__file__).parent.parent / "logs" / "trading-arena.log"
+        if not log_file.exists():
+            print("[OK] Arquivo trading-arena.log não encontrado.")
             return True
 
-        total_skips = sum(row["c"] for row in skips)
-        print(f"✓ Rejeições recentes (1h): {total_skips}")
+        skips = {}
+        total_skips = 0
 
-        for row in skips:
-            reason = row["reasoning"][:80] if row["reasoning"] else "unknown"
-            count = row["c"]
+        # Ler as últimas 1000 linhas
+        with open(log_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            # Pegar até as últimas 1000 linhas
+            for line in lines[-1000:]:
+                if "SKIP:" in line:
+                    parts = line.split("SKIP:")
+                    if len(parts) > 1:
+                        reason = parts[1].split("|")[0].strip()
+                        skips[reason] = skips.get(reason, 0) + 1
+                        total_skips += 1
+
+        if not skips:
+            print("[OK] Sem rejeções recentes (últimas 1000 linhas) - bom sinal!")
+            return True
+
+        print(f"[OK] Rejeições nas últimas 1000 linhas de log: {total_skips}")
+
+        sorted_skips = sorted(skips.items(), key=lambda x: x[1], reverse=True)[:10]
+        for reason, count in sorted_skips:
             pct = f"{count * 100 / total_skips:.1f}%"
-            print(f"  {reason}... [{count} x {pct}]")
+            print(f"  {reason[:80]}... [{count} x {pct}]")
 
         return True
 
     except Exception as e:
-        print(f"❌ Erro ao verificar rejeições: {e}")
+        print(f"[X] Erro ao verificar rejeições: {e}")
         return False
 
 
@@ -187,7 +194,7 @@ def check_risk_status():
 
             max_daily_loss_per_bot = config.get_max_daily_loss_per_bot()
 
-            print(f"✓ Daily Loss Limit (per bot): ${max_daily_loss_per_bot:.2f}")
+            print(f"[OK] Daily Loss Limit (per bot): ${max_daily_loss_per_bot:.2f}")
 
             if not daily_loss:
                 print("  Sem perdas significativas hoje")
@@ -197,25 +204,25 @@ def check_risk_status():
                     loss = row["loss"]
                     pct = f"{loss * 100 / max_daily_loss_per_bot:.1f}%"
                     status = (
-                        "🔴 AT LIMIT"
+                        "[!!] AT LIMIT"
                         if loss >= max_daily_loss_per_bot
-                        else "⚠️  CAUTION"
+                        else "[!]  CAUTION"
                         if loss > max_daily_loss_per_bot * 0.7
-                        else "✓ OK"
+                        else "[OK] OK"
                     )
                     print(f"  {bot}: ${loss:.2f} ({pct}) [{status}]")
 
             # Open positions
             open_positions = conn.execute(
-                "SELECT COUNT(*) as c FROM open_positions WHERE closed_at IS NULL"
+                "SELECT COUNT(*) as c FROM trades WHERE outcome IS NULL"
             ).fetchone()
 
-            print(f"✓ Open Positions: {open_positions['c']}")
+            print(f"[OK] Open Positions: {open_positions['c']}")
 
             return True
 
     except Exception as e:
-        print(f"⚠️  Não foi possível verificar RiskManager: {e}")
+        print(f"[!]  Não foi possível verificar RiskManager: {e}")
         return True  # não falha
 
 
@@ -229,12 +236,12 @@ def print_summary(checks: list):
     print(f"Status: {passed}/{total} checks")
 
     if passed == total:
-        print("✅ TUDO OK - MODO AGGRESSIVE CONFIGURADO CORRETAMENTE")
+        print("[OK] TUDO OK - MODO AGGRESSIVE CONFIGURADO CORRETAMENTE")
         print("   Inicie com: python arena.py")
     elif passed >= total - 1:
-        print("⚠️  QUASE PRONTO - Verifique avisos acima")
+        print("[!]  QUASE PRONTO - Verifique avisos acima")
     else:
-        print("❌ CONFIGURAÇÃO INCOMPLETA - Siga os avisos acima")
+        print("[X] CONFIGURAÇÃO INCOMPLETA - Siga os avisos acima")
 
     print()
 
@@ -261,7 +268,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nInterrompido pelo usuário.")
     except Exception as e:
-        print(f"\n❌ Erro crítico: {e}")
+        print(f"\n[X] Erro crítico: {e}")
         import traceback
 
         traceback.print_exc()
