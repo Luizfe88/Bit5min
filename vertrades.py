@@ -12,6 +12,7 @@ import config
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
+
 # Colors for terminal
 class Colors:
     GREEN = "\033[92m"
@@ -23,15 +24,18 @@ class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
 
+
 def get_simmer_prices() -> Dict[str, float]:
     """Busca preços atuais de todos os mercados ativos no Simmer."""
     try:
         # Tentar carregar a chave da API do Simmer do config ou arquivo
         api_key = None
-        if hasattr(config, "SIMMER_API_KEY_PATH") and os.path.exists(config.SIMMER_API_KEY_PATH):
+        if hasattr(config, "SIMMER_API_KEY_PATH") and os.path.exists(
+            config.SIMMER_API_KEY_PATH
+        ):
             with open(config.SIMMER_API_KEY_PATH) as f:
                 api_key = json.load(f).get("api_key")
-        
+
         if not api_key:
             return {}
 
@@ -40,16 +44,16 @@ def get_simmer_prices() -> Dict[str, float]:
             f"{config.SIMMER_BASE_URL}/api/sdk/markets",
             headers=headers,
             params={"status": "active", "limit": 1000},
-            timeout=10
+            timeout=10,
         )
-        
+
         if resp.status_code != 200:
             return {}
 
         markets = resp.json()
         if isinstance(markets, dict):
             markets = markets.get("markets", [])
-            
+
         prices = {}
         for m in markets:
             mid = m.get("id") or m.get("market_id")
@@ -61,14 +65,17 @@ def get_simmer_prices() -> Dict[str, float]:
         print(f"Erro ao buscar preços do Simmer: {e}")
         return {}
 
+
 def format_pnl_pct(val):
     color = Colors.GREEN if val >= 0 else Colors.RED
     return f"{color}{val:+.2f}%{Colors.RESET}"
+
 
 def format_pnl_usd(val):
     color = Colors.GREEN if val >= 0 else Colors.RED
     sign = "+" if val >= 0 else "-"
     return f"{color}{sign}${abs(val):.2f}{Colors.RESET}"
+
 
 def ver_abertas():
     DB_PATH = str(config.DB_PATH)
@@ -89,7 +96,7 @@ def ver_abertas():
     WHERE outcome IS NULL
     ORDER BY created_at DESC
     """
-    
+
     try:
         df = pd.read_sql_query(query, conn)
         if df.empty:
@@ -100,16 +107,21 @@ def ver_abertas():
         pnl_pcts = []
         pnl_usds = []
         ativos = []
+        entry_prices = []
         trailing_status = []
 
         for _, row in df.iterrows():
-            mid = row['market_id']
-            side = row['side'].lower()
-            amt = float(row['amount'])
-            shares = float(row['shares_bought'] or 0)
-            
+            mid = row["market_id"]
+            side = row["side"].lower()
+            amt = float(row["amount"])
+            shares = float(row["shares_bought"] or 0)
+
+            # Calcular preço de entrada
+            entry_price = amt / shares if shares > 0 else 0.0
+            entry_prices.append(f"{entry_price:.4f}" if shares > 0 else "   —   ")
+
             # Status do Trailing (NOVO)
-            if bool(row.get('tp_triggered', 0)):
+            if bool(row.get("tp_triggered", 0)):
                 trailing_status.append(f"{Colors.MAGENTA}ON{Colors.RESET}")
             else:
                 trailing_status.append("OFF")
@@ -120,18 +132,22 @@ def ver_abertas():
                 # Se NO: Custo = 1 - Entry_Price, Atual = 1 - Current_Price
                 # Como Entry_Price (cost per share) no DB já é normalized:
                 # cost_per_share = amt / shares
-                
+
                 entry_cost_per_token = amt / shares
                 current_yes = current_prices[mid]
-                
+
                 # Preço atual do token que possuímos (YES ou NO)
-                current_token_price = current_yes if side == 'yes' else (1.0 - current_yes)
-                
+                current_token_price = (
+                    current_yes if side == "yes" else (1.0 - current_yes)
+                )
+
                 # PnL % = ((Valor_Atual - Custo_Entrada) / Custo_Entrada) * 100
-                p_pct = ((current_token_price - entry_cost_per_token) / entry_cost_per_token) * 100
+                p_pct = (
+                    (current_token_price - entry_cost_per_token) / entry_cost_per_token
+                ) * 100
                 # PnL USD = (PnL % / 100) * Size_USD
                 p_usd = (p_pct / 100) * amt
-                
+
                 pnl_pcts.append(p_pct)
                 pnl_usds.append(p_usd)
                 ativos.append(f"{current_token_price:.4f}")
@@ -143,37 +159,54 @@ def ver_abertas():
                 else:
                     ativos.append("MISS")
 
-        df['Preço_At'] = ativos
-        df['Lucro %'] = [format_pnl_pct(p) for p in pnl_pcts]
-        df['Lucro $'] = [format_pnl_usd(p) for p in pnl_usds]
-        df['SL'] = df['current_sl'].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
-        df['TP'] = df['current_tp'].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
-        df['Trig'] = trailing_status
+        df["Preço_Entry"] = entry_prices
+        df["Preço_At"] = ativos
+        df["Lucro %"] = [format_pnl_pct(p) for p in pnl_pcts]
+        df["Lucro $"] = [format_pnl_usd(p) for p in pnl_usds]
+        df["SL"] = df["current_sl"].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
+        df["TP"] = df["current_tp"].apply(lambda x: f"{x:7.4f}" if x else "   —   ")
+        df["Trig"] = trailing_status
 
         # Selecionar colunas legíveis para o humano
-        cols_to_show = ['id', 'bot_name', 'side', 'amount', 'Preço_At', 'Lucro %', 'Lucro $', 'SL', 'TP', 'Trig', 'market_question']
+        cols_to_show = [
+            "id",
+            "bot_name",
+            "side",
+            "amount",
+            "Preço_Entry",
+            "Preço_At",
+            "Lucro %",
+            "Lucro $",
+            "SL",
+            "TP",
+            "Trig",
+            "market_question",
+        ]
         rename_map = {
-            'id': 'ID',
-            'bot_name': 'Bot',
-            'side': 'Lado',
-            'amount': 'Tamanho ($)',
-            'market_question': 'Mercado'
+            "id": "ID",
+            "bot_name": "Bot",
+            "side": "Lado",
+            "amount": "Tamanho ($)",
+            "Preço_Entry": "Entry",
+            "market_question": "Mercado",
         }
-        
-        print("\n" + "="*80)
+
+        print("\n" + "=" * 80)
         print(f" {Colors.BOLD}{Colors.CYAN}POSIÇÕES ABERTAS (Arena v2.0){Colors.RESET}")
-        print("="*80)
-        
+        print("=" * 80)
+
         display_df = df[cols_to_show].rename(columns=rename_map)
         print(display_df.to_string(index=False))
-        print("="*80 + "\n")
+        print("=" * 80 + "\n")
 
     except Exception as e:
         print(f"Erro ao processar dados: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     ver_abertas()
