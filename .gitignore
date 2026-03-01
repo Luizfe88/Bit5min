@@ -25,3 +25,4 @@ setup_log.md
 
 # OS
 .DS_Store
+.env
