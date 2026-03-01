@@ -142,28 +142,62 @@ def get_conn():
         conn.close()
 
 
-def log_trade(bot_name, market_id, side, amount, venue, mode, confidence=None,
-              reasoning=None, market_question=None, trade_id=None, shares_bought=None,
-              trade_features=None, sl_price=None, tp_price=None):
+def log_trade(
+    bot_name,
+    market_id,
+    side,
+    amount,
+    venue,
+    mode,
+    confidence=None,
+    reasoning=None,
+    market_question=None,
+    trade_id=None,
+    shares_bought=None,
+    trade_features=None,
+    sl_price=None,
+    tp_price=None,
+):
     with get_conn() as conn:
         cursor = conn.execute(
             """INSERT INTO trades (bot_name, market_id, market_question, side, amount,
                confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought,
                sl_price, tp_price, current_sl, current_tp)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (bot_name, market_id, market_question, side, amount,
-             confidence, reasoning,
-             json.dumps(trade_features) if trade_features else None,
-             venue, mode, trade_id, shares_bought,
-             sl_price, tp_price, sl_price, tp_price)
+            (
+                bot_name,
+                market_id,
+                market_question,
+                side,
+                amount,
+                confidence,
+                reasoning,
+                json.dumps(trade_features) if trade_features else None,
+                venue,
+                mode,
+                trade_id,
+                shares_bought,
+                sl_price,
+                tp_price,
+                sl_price,
+                tp_price,
+            ),
         )
         return cursor.lastrowid
 
-def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=None, current_tp=None, tp_triggered=None):
+
+def update_position_sl_tp(
+    trade_id,
+    sl_price=None,
+    tp_price=None,
+    current_sl=None,
+    current_tp=None,
+    tp_triggered=None,
+):
     """Updates SL/TP values and TP triggered flag for an existing trade."""
     updates = []
     params = []
-    
+
     if sl_price is not None:
         updates.append("sl_price=?")
         params.append(sl_price)
@@ -179,45 +213,76 @@ def update_position_sl_tp(trade_id, sl_price=None, tp_price=None, current_sl=Non
     if tp_triggered is not None:
         updates.append("tp_triggered=?")
         params.append(1 if tp_triggered else 0)
-        
+
     if not updates:
         return
 
     params.append(trade_id)
     query = f"UPDATE trades SET {', '.join(updates)} WHERE id=?"
-    
+
     with get_conn() as conn:
         conn.execute(query, tuple(params))
 
 
 def resolve_trade(internal_id, outcome, pnl):
-    with get_conn() as conn:
-        conn.execute(
+    """Resolve a trade by marking it with outcome and PnL.
+
+    Uses explicit transaction management to ensure persistence.
+    """
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.execute(
             "UPDATE trades SET outcome=?, pnl=?, resolved_at=datetime('now') WHERE id=?",
-            (outcome, pnl, internal_id)
+            (outcome, pnl, internal_id),
         )
+        # Verificar se a atualização realmente bateu alguma linha
+        if cursor.rowcount == 0:
+            import logging
+
+            logging.error(
+                f"resolve_trade: No rows updated for trade ID {internal_id}. This trade may not exist."
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        import logging
+
+        logging.error(
+            f"CRITICAL in resolve_trade: Failed to resolve trade {internal_id}: {e}"
+        )
+        try:
+            conn.rollback()
+            conn.close()
+        except:
+            pass
+        raise
 
 
 def get_bot_trades(bot_name, hours=None, limit=50):
     with get_conn() as conn:
         if hours:
-            cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+            cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             rows = conn.execute(
                 "SELECT * FROM trades WHERE bot_name=? AND created_at>=? ORDER BY created_at DESC LIMIT ?",
-                (bot_name, cutoff, limit)
+                (bot_name, cutoff, limit),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT * FROM trades WHERE bot_name=? ORDER BY created_at DESC LIMIT ?",
-                (bot_name, limit)
+                (bot_name, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
 
 def get_bot_performance(bot_name, hours=12):
     with get_conn() as conn:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-        row = conn.execute("""
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        row = conn.execute(
+            """
             SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN outcome IN ('win', 'exit_tp') THEN 1 ELSE 0 END) as wins,
@@ -226,7 +291,9 @@ def get_bot_performance(bot_name, hours=12):
                 COALESCE(AVG(pnl), 0) as avg_pnl
             FROM trades
             WHERE bot_name=? AND created_at>=? AND outcome IN ('win', 'loss', 'exit_tp', 'exit_sl')
-        """, (bot_name, cutoff)).fetchone()
+        """,
+            (bot_name, cutoff),
+        ).fetchone()
         result = dict(row)
         result["wins"] = result["wins"] or 0
         result["losses"] = result["losses"] or 0
@@ -237,8 +304,11 @@ def get_bot_performance(bot_name, hours=12):
 
 def get_all_bots_performance(hours=12):
     with get_conn() as conn:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-        rows = conn.execute("""
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        rows = conn.execute(
+            """
             SELECT
                 bot_name,
                 COUNT(*) as total_trades,
@@ -248,7 +318,9 @@ def get_all_bots_performance(hours=12):
             FROM trades
             WHERE created_at>=? AND outcome IN ('win', 'loss', 'exit_tp', 'exit_sl')
             GROUP BY bot_name
-        """, (cutoff,)).fetchall()
+        """,
+            (cutoff,),
+        ).fetchall()
         results = {}
         for r in rows:
             d = dict(r)
@@ -260,13 +332,23 @@ def get_all_bots_performance(hours=12):
         return results
 
 
-def save_generation_snapshot(generation, bot_name, strategy_type, win_rate, total_pnl, trades, params):
+def save_generation_snapshot(
+    generation, bot_name, strategy_type, win_rate, total_pnl, trades, params
+):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO generation_snapshots 
                (generation, bot_name, strategy_type, win_rate, total_pnl, trades, params)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (int(generation), bot_name, strategy_type, float(win_rate), float(total_pnl), int(trades), json.dumps(params))
+            (
+                int(generation),
+                bot_name,
+                strategy_type,
+                float(win_rate),
+                float(total_pnl),
+                int(trades),
+                json.dumps(params),
+            ),
         )
 
 
@@ -275,7 +357,7 @@ def save_bot_config(bot_name, strategy_type, generation, params, lineage=None):
         conn.execute(
             """INSERT INTO bot_configs (bot_name, strategy_type, generation, lineage, params)
                VALUES (?, ?, ?, ?, ?)""",
-            (bot_name, strategy_type, generation, lineage, json.dumps(params))
+            (bot_name, strategy_type, generation, lineage, json.dumps(params)),
         )
 
 
@@ -283,7 +365,7 @@ def retire_bot(bot_name):
     with get_conn() as conn:
         conn.execute(
             "UPDATE bot_configs SET active=0, retired_at=datetime('now') WHERE bot_name=? AND active=1",
-            (bot_name,)
+            (bot_name,),
         )
 
 
@@ -300,8 +382,13 @@ def log_evolution(cycle_number, survivors, replaced, new_bots, rankings):
         conn.execute(
             """INSERT INTO evolution_events (cycle_number, survivors, replaced, new_bots, rankings)
                VALUES (?, ?, ?, ?, ?)""",
-            (cycle_number, json.dumps(survivors), json.dumps(replaced),
-             json.dumps(new_bots), json.dumps(rankings))
+            (
+                cycle_number,
+                json.dumps(survivors),
+                json.dumps(replaced),
+                json.dumps(new_bots),
+                json.dumps(rankings),
+            ),
         )
 
 
@@ -329,11 +416,14 @@ def get_total_daily_loss(mode="paper"):
             except Exception:
                 pass
         cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT COALESCE(SUM(pnl), 0) as total_loss
             FROM trades
             WHERE mode=? AND created_at>=? AND pnl < 0 AND outcome IS NOT NULL
-        """, (mode, cutoff_str)).fetchone()
+        """,
+            (mode, cutoff_str),
+        ).fetchone()
         return abs(dict(row)["total_loss"])
 
 
@@ -353,12 +443,16 @@ def get_bot_daily_loss(bot_name, mode="paper"):
             except Exception:
                 pass
         cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT COALESCE(SUM(pnl), 0) as total_loss
             FROM trades
             WHERE bot_name=? AND mode=? AND created_at>=? AND pnl < 0 AND outcome IS NOT NULL
-        """, (bot_name, mode, cutoff_str)).fetchone()
+        """,
+            (bot_name, mode, cutoff_str),
+        ).fetchone()
         return abs(dict(row)["total_loss"])
+
 
 def get_active_bot_names():
     with get_conn() as conn:
@@ -366,6 +460,7 @@ def get_active_bot_names():
             "SELECT DISTINCT bot_name FROM bot_configs WHERE active=1"
         ).fetchall()
         return [r["bot_name"] for r in rows]
+
 
 def reset_arena_day(mode="paper"):
     """
@@ -389,21 +484,27 @@ def get_dashboard_stats():
         week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
 
         # Exclude phantom trades (pnl=0 resolved from voting era)
-        today_stats = conn.execute("""
+        today_stats = conn.execute(
+            """
             SELECT COUNT(*) as trades, COALESCE(SUM(pnl), 0) as pnl,
                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN pnl < 0 AND outcome IS NOT NULL THEN 1 ELSE 0 END) as losses
             FROM trades WHERE date(created_at)=?
                 AND NOT (outcome IS NOT NULL AND pnl = 0)
-        """, (today,)).fetchone()
+        """,
+            (today,),
+        ).fetchone()
 
-        week_stats = conn.execute("""
+        week_stats = conn.execute(
+            """
             SELECT COUNT(*) as trades, COALESCE(SUM(pnl), 0) as pnl,
                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                    SUM(CASE WHEN pnl < 0 AND outcome IS NOT NULL THEN 1 ELSE 0 END) as losses
             FROM trades WHERE created_at>=?
                 AND NOT (outcome IS NOT NULL AND pnl = 0)
-        """, (week_ago,)).fetchone()
+        """,
+            (week_ago,),
+        ).fetchone()
 
         all_stats = conn.execute("""
             SELECT COUNT(*) as trades, COALESCE(SUM(pnl), 0) as pnl,
@@ -439,15 +540,18 @@ def get_bot_consecutive_losses(bot_name, mode="paper"):
             except Exception:
                 pass
         # Get last trades ordered by time (most recent first)
-        trades = conn.execute("""
+        trades = conn.execute(
+            """
             SELECT pnl, outcome 
             FROM trades 
             WHERE bot_name = ? AND mode = ? AND outcome IS NOT NULL
             {} 
             ORDER BY created_at DESC
             LIMIT 10
-        """.format(where_extra), params).fetchall()
-        
+        """.format(where_extra),
+            params,
+        ).fetchall()
+
         consecutive_losses = 0
         for trade in trades:
             if trade["pnl"] < 0:  # Loss
@@ -455,8 +559,9 @@ def get_bot_consecutive_losses(bot_name, mode="paper"):
             elif trade["pnl"] > 0:  # Win
                 break  # Stop counting at first win
             # Skip trades with pnl = 0 (push/cancel)
-        
+
         return consecutive_losses
+
 
 def get_arena_state(key, default=None):
     with get_conn() as conn:
@@ -471,29 +576,35 @@ def set_arena_state(key, value):
         conn.execute(
             """INSERT INTO arena_state (key, value) VALUES (?, ?)
                ON CONFLICT(key) DO UPDATE SET value=?, updated_at=datetime('now')""",
-            (key, str(value), str(value))
+            (key, str(value), str(value)),
         )
 
 
 def get_total_open_position_value(bot_name, mode="paper"):
     """Get total value of all open positions for a bot"""
     with get_conn() as conn:
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT COALESCE(SUM(amount), 0) as total_amount
             FROM trades
             WHERE bot_name=? AND mode=? AND outcome IS NULL
-        """, (bot_name, mode)).fetchone()
+        """,
+            (bot_name, mode),
+        ).fetchone()
         return dict(row)["total_amount"]
 
 
 def get_total_open_position_value_all_bots(mode="paper"):
     """Get total value of all open positions for all bots"""
     with get_conn() as conn:
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT COALESCE(SUM(amount), 0) as total_amount
             FROM trades
             WHERE mode=? AND outcome IS NULL
-        """, (mode,)).fetchone()
+        """,
+            (mode,),
+        ).fetchone()
         return dict(row)["total_amount"]
 
 
@@ -505,14 +616,17 @@ def get_bot_current_capital(bot_name, mode="paper"):
             initial_capital = 10.0
         else:
             initial_capital = 10000.0
-        
+
         # Get total PnL for this bot
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT COALESCE(SUM(pnl), 0) as total_pnl
             FROM trades
             WHERE bot_name=? AND mode=? AND outcome IS NOT NULL
-        """, (bot_name, mode)).fetchone()
-        
+        """,
+            (bot_name, mode),
+        ).fetchone()
+
         total_pnl = dict(row)["total_pnl"]
         return initial_capital + total_pnl
 
@@ -522,15 +636,16 @@ def get_total_current_capital(mode="paper"):
     bot_names = get_active_bot_names()
     if not bot_names:
         return 10000.0 if mode == "live" else 10.0
-    
+
     total_capital = 0.0
     for bot_name in bot_names:
         total_capital += get_bot_current_capital(bot_name, mode)
-    
+
     return total_capital
 
 
 # ===== FUNÇÕES PARA SISTEMA DE EVOLUÇÃO POR TRADES =====
+
 
 def get_evolution_state():
     """Obtém estado do sistema de evolução"""
@@ -539,7 +654,7 @@ def get_evolution_state():
             SELECT value FROM arena_state 
             WHERE key = 'evolution_state'
         """).fetchone()
-        
+
         if row:
             try:
                 return json.loads(dict(row)["value"])
@@ -553,7 +668,7 @@ def save_evolution_state(state_dict):
     with get_conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO arena_state (key, value) VALUES (?, ?)""",
-            ("evolution_state", json.dumps(state_dict))
+            ("evolution_state", json.dumps(state_dict)),
         )
 
 
@@ -563,8 +678,13 @@ def record_resolved_trade(bot_name, trade_result):
         conn.execute(
             """INSERT INTO resolved_trades (bot_name, market_id, outcome, pnl, resolved_at)
                VALUES (?, ?, ?, ?, ?)""",
-            (bot_name, trade_result.get('market_id'), trade_result.get('outcome'),
-             trade_result.get('pnl'), datetime.now().isoformat())
+            (
+                bot_name,
+                trade_result.get("market_id"),
+                trade_result.get("outcome"),
+                trade_result.get("pnl"),
+                datetime.now().isoformat(),
+            ),
         )
 
 
@@ -576,29 +696,44 @@ def get_global_resolved_trades_count(hours=None):
             row = conn.execute(
                 """SELECT COUNT(*) as count FROM resolved_trades 
                    WHERE resolved_at >= ?""",
-                (since,)
+                (since,),
             ).fetchone()
         else:
             row = conn.execute(
                 """SELECT COUNT(*) as count FROM resolved_trades"""
             ).fetchone()
-        
+
         return dict(row)["count"] if row else 0
 
 
-def log_evolution(cycle_number, survivor_names, replaced_names, new_bot_names, rankings, trigger_reason="manual"):
+def log_evolution(
+    cycle_number,
+    survivor_names,
+    replaced_names,
+    new_bot_names,
+    rankings,
+    trigger_reason="manual",
+):
     """Registra evento de evolução no banco"""
     with get_conn() as conn:
         try:
-            rankings_clean = [{k: v for k, v in r.items() if k != "bot"} for r in (rankings or [])]
+            rankings_clean = [
+                {k: v for k, v in r.items() if k != "bot"} for r in (rankings or [])
+            ]
         except Exception:
             rankings_clean = rankings
         conn.execute(
             """INSERT INTO evolution_events 
                (cycle_number, survivors, replaced, new_bots, rankings, trigger_reason)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (cycle_number, json.dumps(survivor_names), json.dumps(replaced_names),
-             json.dumps(new_bot_names), json.dumps(rankings_clean), trigger_reason)
+            (
+                cycle_number,
+                json.dumps(survivor_names),
+                json.dumps(replaced_names),
+                json.dumps(new_bot_names),
+                json.dumps(rankings_clean),
+                trigger_reason,
+            ),
         )
 
 
@@ -609,7 +744,7 @@ def get_last_evolution_event():
             """SELECT * FROM evolution_events 
                ORDER BY created_at DESC LIMIT 1"""
         ).fetchone()
-        
+
         return dict(row) if row else None
 
 
@@ -619,9 +754,9 @@ def get_evolution_history(limit=10):
         rows = conn.execute(
             """SELECT * FROM evolution_events 
                ORDER BY created_at DESC LIMIT ?""",
-            (limit,)
+            (limit,),
         ).fetchall()
-        
+
         return [dict(row) for row in rows]
 
 
@@ -629,7 +764,7 @@ def get_resolved_trades_stats(hours=24):
     """Obtém estatísticas de trades resolvidos"""
     with get_conn() as conn:
         since = (datetime.now() - timedelta(hours=hours)).isoformat()
-        
+
         # Total de trades por bot
         bot_stats = conn.execute(
             """SELECT bot_name, COUNT(*) as count, SUM(pnl) as total_pnl,
@@ -637,21 +772,23 @@ def get_resolved_trades_stats(hours=24):
                FROM resolved_trades 
                WHERE resolved_at >= ?
                GROUP BY bot_name""",
-            (since,)
+            (since,),
         ).fetchall()
-        
+
         # Total global
         total = conn.execute(
             """SELECT COUNT(*) as count, SUM(pnl) as total_pnl,
                       AVG(pnl) as avg_pnl
                FROM resolved_trades 
                WHERE resolved_at >= ?""",
-            (since,)
+            (since,),
         ).fetchone()
-        
+
         return {
             "by_bot": [dict(row) for row in bot_stats],
-            "total": dict(total) if total else {"count": 0, "total_pnl": 0, "avg_pnl": 0}
+            "total": dict(total)
+            if total
+            else {"count": 0, "total_pnl": 0, "avg_pnl": 0},
         }
 
 
@@ -679,7 +816,9 @@ def _ensure_evolution_events_schema():
             cols = conn.execute("PRAGMA table_info(evolution_events)").fetchall()
             names = [dict(c).get("name") for c in cols]
             if "trigger_reason" not in names:
-                conn.execute("ALTER TABLE evolution_events ADD COLUMN trigger_reason TEXT")
+                conn.execute(
+                    "ALTER TABLE evolution_events ADD COLUMN trigger_reason TEXT"
+                )
         except Exception:
             pass
 

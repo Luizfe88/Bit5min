@@ -1029,6 +1029,7 @@ def assign_bot_slots(bots, bot_keys, default_key):
 def restore_open_positions():
     """Lê todas as trades abertas do DB e as restaura no RiskManager para monitoramento."""
     from core.position import OpenPosition
+
     try:
         with db.get_conn() as conn:
             # Seleciona as colunas necessárias para reconstruir o estado
@@ -1039,21 +1040,25 @@ def restore_open_positions():
                 FROM trades
                 WHERE outcome IS NULL
             """).fetchall()
-            
+
             restored = 0
             for r in rows:
                 features = {}
                 if r["trade_features"]:
                     try:
-                        features = json.loads(r["trade_features"]) if isinstance(r["trade_features"], str) else r["trade_features"]
+                        features = (
+                            json.loads(r["trade_features"])
+                            if isinstance(r["trade_features"], str)
+                            else r["trade_features"]
+                        )
                     except:
                         pass
-                
+
                 # Reconstruir objeto OpenPosition
                 # Note: entry_price é recalculado se não salvo explicitamente
                 shares = r["shares_bought"] or 0
                 entry_price = (r["amount"] / shares) if shares > 0 else 0
-                
+
                 # Se entry_price for 0, o RiskManager pode ignorar a posição, então tentamos ser conservadores
                 if entry_price <= 0:
                     continue
@@ -1064,26 +1069,32 @@ def restore_open_positions():
                     direction=r["side"],
                     entry_price=entry_price,
                     size_usd=r["amount"],
-                    entry_time=time.time(), # Time do restart
+                    entry_time=time.time(),  # Time do restart
                     sl_price=r["current_sl"] or r.get("sl_price"),
                     tp_price=r["current_tp"] or r.get("tp_price"),
-                    trade_id=r["id"],
+                    trade_id=r["trade_id"],  # FIXED: Use the Simmer transaction ID
+                    id=r["id"],  # FIXED: Use the database row ID
                     shares=shares,
                     tp_triggered=bool(r["tp_triggered"]),
                     # Se TP já triggou, trailing deve estar ligado
-                    trailing_enabled=bool(r["tp_triggered"] or features.get("trailing_enabled", False)),
+                    trailing_enabled=bool(
+                        r["tp_triggered"] or features.get("trailing_enabled", False)
+                    ),
                     trailing_distance=features.get("trailing_distance", 0.025),
-                    trailing_step=features.get("trailing_step", 0.01)
+                    trailing_step=features.get("trailing_step", 0.01),
                 )
-                
+
                 risk_manager.add_position(pos)
                 restored += 1
-            
+
             if restored > 0:
-                logger.info(f"Monitor: Restauradas {restored} posições abertas do DB para monitoramento ativo.")
+                logger.info(
+                    f"Monitor: Restauradas {restored} posições abertas do DB para monitoramento ativo."
+                )
     except Exception as e:
         logger.error(f"Erro ao restaurar posições: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -1173,7 +1184,7 @@ def main_loop(bots, api_key):
     orderflow_feed.start()
 
     # Start Position Monitor (Background SL/TP Check)
-    restore_open_positions() # Restaura o que já estava aberto ANTES de ligar o monitor
+    restore_open_positions()  # Restaura o que já estava aberto ANTES de ligar o monitor
     monitor = PositionMonitorThread(api_key)
     monitor.start()
 

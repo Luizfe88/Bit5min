@@ -157,9 +157,9 @@ class ArenaRiskManager:
         enable_sl_tp: bool,
         sl_pct: float,
         tp_pct: float,
-        side: str = 'yes',
+        side: str = "yes",
         trailing_enabled: bool = False,
-        trailing_distance: float = 0.045
+        trailing_distance: float = 0.045,
     ) -> Dict[str, Optional[float]]:
         """
         Calcula os valores de SL e TP sempre referenciados ao preço do YES (Market Price).
@@ -174,12 +174,12 @@ class ArenaRiskManager:
         tp_pct = abs(tp_pct)
 
         if enable_sl_tp and fill_price > 0:
-            if side.lower() == 'yes':
+            if side.lower() == "yes":
                 # Lado YES: Lucra com a subida, perde com a queda
                 sl_price = fill_price * (1 - sl_pct)
                 tp_price = fill_price * (1 + tp_pct)
 
-            elif side.lower() == 'no':
+            elif side.lower() == "no":
                 # 1. Encontra o custo real investido no lado NO
                 cost_no = 1.0 - fill_price
 
@@ -189,8 +189,8 @@ class ArenaRiskManager:
                 tp_value_no = cost_no * (1 + tp_pct)
 
                 # 3. Converte de volta para a referência de preço do YES (Universal) para o Banco de Dados
-                sl_price = 1.0 - sl_value_no   # acima da entrada YES → gatilho de stop
-                tp_price = 1.0 - tp_value_no   # abaixo da entrada YES → gatilho de lucro
+                sl_price = 1.0 - sl_value_no  # acima da entrada YES → gatilho de stop
+                tp_price = 1.0 - tp_value_no  # abaixo da entrada YES → gatilho de lucro
 
             # Clamp de segurança
             if sl_price is not None:
@@ -318,16 +318,18 @@ class ArenaRiskManager:
             return
 
         side = pos.direction.lower()
-        dist = getattr(pos, 'trailing_distance', 0.025)
+        dist = getattr(pos, "trailing_distance", 0.025)
 
         if pos.tp_triggered:
-            if side == 'yes':
+            if side == "yes":
                 # Candidato = current_price - trailing_distance
                 candidate = current_price - dist
                 # CATRACA: só avança se for melhor (mais alto)
                 if candidate > pos.sl_price:
                     pos.sl_price = candidate
-                    db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True)
+                    db.update_position_sl_tp(
+                        trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True
+                    )
                     logger.info(
                         f"{Colors.CYAN}[TRAILING UP]{Colors.RESET} "
                         f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
@@ -341,7 +343,9 @@ class ArenaRiskManager:
                 # CATRACA: só avança se for melhor (mais baixo)
                 if candidate < pos.sl_price:
                     pos.sl_price = candidate
-                    db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True)
+                    db.update_position_sl_tp(
+                        trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True
+                    )
                     logger.info(
                         f"{Colors.CYAN}[TRAILING DOWN]{Colors.RESET} "
                         f"{Colors.BOLD}{pos.bot_name}{Colors.RESET} "
@@ -361,11 +365,11 @@ class ArenaRiskManager:
             market_id = pos.market_id
             m_state = market_prices.get(market_id)
 
-            if not m_state or 'current_price' not in m_state:
+            if not m_state or "current_price" not in m_state:
                 continue
 
             # SEMPRE usamos o preço do YES como referência de mercado
-            current_yes = float(m_state['current_price'])
+            current_yes = float(m_state["current_price"])
             side = pos.direction.lower()
 
             # 1. SLIPPAGE/SAFETY GUARD (Preço inválido)
@@ -376,7 +380,7 @@ class ArenaRiskManager:
             if not pos.tp_triggered and pos.tp_price is not None:
                 # Lógica de breakeven simplificada: 50% do caminho.
                 # Para YES: (TP - Entry). Para NO: (Entry - TP).
-                if side == 'yes' and not getattr(pos, "breakeven_triggered", False):
+                if side == "yes" and not getattr(pos, "breakeven_triggered", False):
                     # Entry_price aqui é o Token Price (YES).
                     entry_yes = pos.entry_price
                     if pos.tp_price > entry_yes:
@@ -384,8 +388,10 @@ class ArenaRiskManager:
                         if current_yes >= trigger:
                             pos.sl_price = entry_yes
                             setattr(pos, "breakeven_triggered", True)
-                            db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price)
-                elif side == 'no' and not getattr(pos, "breakeven_triggered", False):
+                            db.update_position_sl_tp(
+                                trade_id=pos.trade_id, sl_price=pos.sl_price
+                            )
+                elif side == "no" and not getattr(pos, "breakeven_triggered", False):
                     # Entry_price aqui é o Token Price (NO). Converter para YES.
                     entry_yes = 1.0 - pos.entry_price
                     if pos.tp_price < entry_yes:
@@ -394,7 +400,9 @@ class ArenaRiskManager:
                         if current_yes <= trigger:
                             pos.sl_price = entry_yes
                             setattr(pos, "breakeven_triggered", True)
-                            db.update_position_sl_tp(trade_id=pos.trade_id, sl_price=pos.sl_price)
+                            db.update_position_sl_tp(
+                                trade_id=pos.trade_id, sl_price=pos.sl_price
+                            )
 
             # 3. TRAILING UPDATE
             if pos.trailing_enabled:
@@ -402,14 +410,18 @@ class ArenaRiskManager:
 
             # 4. GESTÃO DE SAÍDA (SL / TP)
             # Agora com Operadores Invertidos conforme lado para referência YES
-            
-            if side == 'yes':
+
+            if side == "yes":
                 # YES: SL (abaixo), TP (acima)
                 if pos.sl_price is not None and current_yes <= pos.sl_price:
                     gap_warn = " [GAP]" if current_yes < pos.sl_price - 0.05 else ""
                     label = ("Trailing Exit" if pos.tp_triggered else "SL") + gap_warn
                     exits.append((pos, label, current_yes))
-                elif not pos.tp_triggered and pos.tp_price is not None and current_yes >= pos.tp_price:
+                elif (
+                    not pos.tp_triggered
+                    and pos.tp_price is not None
+                    and current_yes >= pos.tp_price
+                ):
                     # ── GATILHO TP -> TRAILING (YES) ──────────────────────────────
                     pos.tp_triggered = True
                     pos.trailing_enabled = True
@@ -423,9 +435,7 @@ class ArenaRiskManager:
                     pos.sl_price = max(pos.sl_price or 0.0, locked_sl)
 
                     db.update_position_sl_tp(
-                        trade_id=pos.trade_id,
-                        sl_price=pos.sl_price,
-                        tp_triggered=True
+                        trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True
                     )
                     logger.info(
                         f"{Colors.MAGENTA}🔥 TP TRIGGERED (YES){Colors.RESET} "
@@ -440,7 +450,11 @@ class ArenaRiskManager:
                     gap_warn = " [GAP]" if current_yes > pos.sl_price + 0.05 else ""
                     label = ("Trailing Exit" if pos.tp_triggered else "SL") + gap_warn
                     exits.append((pos, label, current_yes))
-                elif not pos.tp_triggered and pos.tp_price is not None and current_yes <= pos.tp_price:
+                elif (
+                    not pos.tp_triggered
+                    and pos.tp_price is not None
+                    and current_yes <= pos.tp_price
+                ):
                     # ── GATILHO TP -> TRAILING (NO) ───────────────────────────────
                     pos.tp_triggered = True
                     pos.trailing_enabled = True
@@ -454,9 +468,7 @@ class ArenaRiskManager:
                     pos.sl_price = min(pos.sl_price or 1.0, locked_sl)
 
                     db.update_position_sl_tp(
-                        trade_id=pos.trade_id,
-                        sl_price=pos.sl_price,
-                        tp_triggered=True
+                        trade_id=pos.trade_id, sl_price=pos.sl_price, tp_triggered=True
                     )
                     logger.info(
                         f"{Colors.MAGENTA}🔥 TP TRIGGERED (NO){Colors.RESET} "
@@ -511,13 +523,13 @@ class ArenaRiskManager:
             # exec_price is the YES price from market (passed from check_sl_tp)
             # pos.entry_price is the TOKEN price (amount / shares)
             side = pos.direction.lower()
-            if side == 'yes':
+            if side == "yes":
                 pnl = (exec_price - pos.entry_price) * pos.shares
             else:
                 # NO: Ganhamos quando o preço do YES CAI.
                 entry_yes = 1.0 - pos.entry_price
                 pnl = (entry_yes - exec_price) * pos.shares
-                
+
             pnl_pct = (pnl / pos.size_usd) * 100 if pos.size_usd else 0
 
             # Cores para Saída
@@ -532,10 +544,10 @@ class ArenaRiskManager:
                 f"(entry {Colors.YELLOW}{pos.entry_price:.3f}{Colors.RESET}) "
                 f"PnL: {pnl_color}{('+' if pnl >= 0 else '')}${pnl:.2f} ({pnl_pct:+.1f}%){Colors.RESET}"
             )
-            
+
             # 1. Log to console
             logger.info(log_msg)
-            
+
             # 2. Telegram (Robustified)
             try:
                 if self.telegram:
@@ -552,13 +564,23 @@ class ArenaRiskManager:
                     )
                     self.telegram.send_message(clean_msg)
             except Exception as e:
-                logger.error(f"Failed to send telegram notification for {pos.trade_id}: {e}")
+                logger.error(
+                    f"Failed to send telegram notification for {pos.trade_id}: {e}"
+                )
 
             # 3. Database Resolution (CRITICAL)
-            try:
-                db.resolve_trade(pos.trade_id, reason.lower(), pnl)
-            except Exception as e:
-                logger.error(f"CRITICAL: Failed to resolve trade {pos.trade_id} in DB: {e}")
+            # Use pos.id (database row ID) not pos.trade_id (Simmer transaction ID)
+            if pos.id is None:
+                logger.error(
+                    f"CRITICAL: Cannot resolve trade - pos.id is None. Trade ID: {pos.trade_id}, Market: {pos.market_id}"
+                )
+            else:
+                try:
+                    db.resolve_trade(pos.id, reason.lower(), pnl)
+                except Exception as e:
+                    logger.error(
+                        f"CRITICAL: Failed to resolve trade ID={pos.id} (trade_id={pos.trade_id}) in DB: {e}"
+                    )
 
             if pos.trade_id in self.open_positions:
                 del self.open_positions[pos.trade_id]
