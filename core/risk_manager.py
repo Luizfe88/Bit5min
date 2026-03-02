@@ -376,6 +376,22 @@ class ArenaRiskManager:
             if current_yes <= 0 or current_yes >= 1.0:
                 continue
 
+            # 1.5. TIME-PROFIT EXIT (50 minutos = 3000 segundos)
+            # Fecha se o tempo de hold >= 50 min e o PnL atual for maior que zero
+            hold_time_seconds = time.time() - pos.entry_time
+            if hold_time_seconds >= 3000:
+                current_pnl = 0.0
+                if pos.shares > 0:
+                    if side == "yes":
+                        current_pnl = (current_yes - pos.entry_price) * pos.shares
+                    else:
+                        entry_yes_calc = 1.0 - pos.entry_price
+                        current_pnl = (entry_yes_calc - current_yes) * pos.shares
+                
+                if current_pnl > 0:
+                    exits.append((pos, "TIME-PROFIT EXIT", current_yes))
+                    continue
+
             # 2. BREAKEVEN AUTOMÁTICO (Mantido em termos de YES price)
             if not pos.tp_triggered and pos.tp_price is not None:
                 # Lógica de breakeven simplificada: 50% do caminho.
