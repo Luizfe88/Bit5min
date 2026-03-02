@@ -1591,6 +1591,21 @@ def main_loop(bots, api_key):
                     last_skip = skip_cache.get(key)
                     if last_skip and (now_ts - last_skip) < skip_retry:
                         continue
+                        
+                    # --- FILTRO DE EXCLUSIVIDADE DE MERCADO ---
+                    market_occupied = False
+                    for pos in risk_manager.open_positions.values():
+                        if pos.market_id == market_id:
+                            market_occupied = True
+                            break
+                    if market_occupied:
+                        skip_cache[key] = now_ts
+                        logger.info(f"[{bot.name}] [SKIP] Market already occupied by another bot. Avoiding concentration risk.")
+                        skip_count += 1
+                        r = "[SKIP] Market already occupied by another bot. Avoiding concentration risk."
+                        skip_reasons[r] = skip_reasons.get(r, 0) + 1
+                        continue
+                    # ------------------------------------------
 
                     try:
                         signal = bot.make_decision(market, combined_signals)
