@@ -274,6 +274,7 @@ TRADE_MAX_TTE_SECONDS = MARKET_FILTER["max_window_seconds"]
 # Risk Management - Position Sizing
 POSITION_SIZE_PCT = _env_float("BOT_ARENA_POSITION_SIZE_PCT", 0.01)  # 1.0% default
 MAX_OPEN_TRADES = _env_int("BOT_ARENA_MAX_OPEN_TRADES", 6)
+MAX_BOTS_PER_MARKET = _env_int("BOT_ARENA_MAX_BOTS_PER_MARKET", 2)
 
 # Risk Management - SL/TP Defaults (New System)
 MEANREV_SL_PCT = _env_float("BOT_ARENA_MEANREV_SL_PCT", -0.25)

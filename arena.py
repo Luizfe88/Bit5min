@@ -1592,20 +1592,31 @@ def main_loop(bots, api_key):
                     if last_skip and (now_ts - last_skip) < skip_retry:
                         continue
                         
-                    # --- FILTRO DE EXCLUSIVIDADE DE MERCADO ---
-                    market_occupied = False
-                    for pos in risk_manager.open_positions.values():
-                        if pos.market_id == market_id:
-                            market_occupied = True
-                            break
-                    if market_occupied:
+                    # --- FILTRO DE EXCLUSIVIDADE E CONCENTRAÇÃO DE MERCADO ---
+                    # 1. Exclusividade: O mesmo bot não pode ter duas posições no mesmo mercado
+                    bot_already_in_market = any(
+                        pos.market_id == market_id and pos.bot_name == bot.name
+                        for pos in risk_manager.open_positions.values()
+                    )
+                    if bot_already_in_market:
                         skip_cache[key] = now_ts
-                        logger.info(f"[{bot.name}] [SKIP] Market already occupied by another bot. Avoiding concentration risk.")
+                        logger.info(f"[{bot.name}] [SKIP] Bot already has a position in this market.")
+                        continue
+                    
+                    # 2. Concentração: Limite de bots diferentes no mesmo mercado
+                    bots_in_market = sum(
+                        1 for pos in risk_manager.open_positions.values()
+                        if pos.market_id == market_id
+                    )
+                    max_allowed = getattr(config, "MAX_BOTS_PER_MARKET", 2)
+                    if bots_in_market >= max_allowed:
+                        skip_cache[key] = now_ts
+                        logger.info(f"[{bot.name}] [SKIP] Market reached max concentration ({bots_in_market}/{max_allowed} bots).")
                         skip_count += 1
-                        r = "[SKIP] Market already occupied by another bot. Avoiding concentration risk."
+                        r = f"[SKIP] Market reached max concentration ({bots_in_market}/{max_allowed} bots)."
                         skip_reasons[r] = skip_reasons.get(r, 0) + 1
                         continue
-                    # ------------------------------------------
+                    # ---------------------------------------------------------
 
                     try:
                         signal = bot.make_decision(market, combined_signals)
