@@ -85,29 +85,64 @@ DB_PATH = (
     Path(_db_env).expanduser() if _db_env else (Path(__file__).parent / "bot_arena.db")
 )
 
-# Target Markets: Multiple crypto 5-min up/down markets
+# Target Markets: Price-action markets across multiple liquid assets
 TARGET_MARKET_QUERIES = [
-    "btc",
-    "eth",
-    "sol",
-    "xrp",
-    "ethereum",
-    "solana",
-    "bitcoin",
-    "ripple",
+    "btc", "bitcoin",
+    "eth", "ethereum",
+    "sol", "solana",
+    "xrp", "ripple",
+    "doge", "dogecoin",
+    "cpi",
+    "interest rate",
+    "fed rate",
+    "inflation",
 ]  # Search terms for market discovery
-TARGET_MARKET_KEYWORDS = ["5 min", "5-min", "5min", "up or down", "up/down"]
+
+# Keyword triggers: if ANY of these is in the question, consider it a candidate
+TARGET_MARKET_KEYWORDS = [
+    "5 min", "5-min", "5min",
+    "up or down", "up/down",
+    "above", "below",           # e.g. "Will ETH be above $X"
+    "price", "reach",           # e.g. "Will BTC reach $X"
+    "interest rate", "cpi",     # macro price-action markets
+]
+
+# Subjective markets to EXCLUDE (politics, sports, culture, elections)
+# If ANY of these terms appear in the question, the market is skipped.
+EXCLUDED_MARKET_KEYWORDS = [
+    # Politics / Elections
+    "election", "elect", "president", "trump", "biden", "harris",
+    "congress", "senate", "vote", "democrat", "republican", "gop",
+    "prime minister", "chancellor", "parliament", "referendum",
+    "governor", "mayor", "impeach", "cabinet",
+    # Sports
+    "nfl", "nba", "mlb", "nhl", "fifa", "champions league",
+    "super bowl", "world cup", "olympics", "playoff", "stanley cup",
+    "mvp", "championship", "match", "tournament", "league",
+    "team", "player", "coach", "score",
+    # Culture / Entertainment / Awards
+    "oscar", "grammy", "emmy", "golden globe", "academy award",
+    "box office", "album", "movie", "film", "song", "artist",
+    "celebrity", "kardashian", "taylor swift",
+    # Geopolitics
+    "war", "ukraine", "russia", "israel", "hamas", "gaza",
+    "nato", "sanction",
+]
+
 TARGET_MARKET_NAMES = [
     "Bitcoin Up or Down",
     "Ethereum Up or Down",
     "Solana Up or Down",
     "Ripple Up or Down",
     "XRP Up or Down",
+    "Dogecoin Up or Down",
+    "DOGE Up or Down",
 ]  # Alternative market names to search
 BTC_5MIN_MARKET_ID = None  # Will be populated by setup.py
 ETH_5MIN_MARKET_ID = None  # Ethereum market ID
 SOL_5MIN_MARKET_ID = None  # Solana market ID
 XRP_5MIN_MARKET_ID = None  # XRP market ID
+DOGE_5MIN_MARKET_ID = None  # Dogecoin market ID
 
 # Risk Limits - Paper Mode (adjusted for $10000 bankroll)
 PAPER_MAX_POSITION = _env_float(

@@ -551,132 +551,133 @@ def load_api_key():
 
 
 def discover_markets(api_key):
-    """Find active BTC, ETH, SOL, XRP 5-min up/down markets."""
+    """Find active price-action markets: BTC, ETH, SOL, XRP, DOGE, CPI, interest rates.
+
+    Exclusion rules:
+    - Skips subjective markets (politics, sports, culture) via config.EXCLUDED_MARKET_KEYWORDS.
+    - Skips markets expiring within 20 minutes (hard safety floor).
+    - Applies liquidity and spread filters from config.
+    """
     import requests
+    from datetime import datetime, timezone
+
+    _MIN_EXPIRY_SECONDS = 20 * 60  # 20-minute hard floor
+
+    # Asset tag definitions: (tag_label, list_of_matching_terms_in_question)
+    ASSET_TAGS = [
+        ("btc",   ["btc", "bitcoin"]),
+        ("eth",   ["eth", "ethereum"]),
+        ("sol",   ["sol", "solana"]),
+        ("xrp",   ["xrp", "ripple"]),
+        ("doge",  ["doge", "dogecoin"]),
+        ("macro", ["cpi", "interest rate", "fed rate", "inflation", "fomc", "fed funds"]),
+    ]
 
     markets = []
-    crypto_found = {"btc": 0, "eth": 0, "sol": 0, "xrp": 0}
+    found_counts = {tag: 0 for tag, _ in ASSET_TAGS}
+
+    # Subjective exclusion list from config (lowercase)
+    excluded_kws = [kw.lower() for kw in getattr(config, "EXCLUDED_MARKET_KEYWORDS", [])]
 
     try:
         headers = {"Authorization": f"Bearer {api_key}"}
         resp = requests.get(
             f"{config.SIMMER_BASE_URL}/api/sdk/markets",
             headers=headers,
-            params={
-                "status": "active",
-                "limit": 200,
-            },  # Increased limit for more markets
+            params={"status": "active", "limit": 200},
             timeout=15,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            markets_list = data if isinstance(data, list) else data.get("markets", [])
+        if resp.status_code != 200:
+            logger.error(f"Market discovery HTTP {resp.status_code}")
+            return markets
 
-            for m in markets_list:
-                q = m.get("question", "").lower()
-                has_5min = any(kw in q for kw in config.TARGET_MARKET_KEYWORDS)
+        data = resp.json()
+        markets_list = data if isinstance(data, list) else data.get("markets", [])
 
-                if has_5min:
-                    # skip markets with less than 1h remaining (prevent weak 5-min markets)
+        for m in markets_list:
+            q = m.get("question", "").lower()
+
+            # ── 1. Must contain at least one price-action trigger keyword ──────────
+            if not any(kw in q for kw in config.TARGET_MARKET_KEYWORDS):
+                continue
+
+            # ── 2. Hard exclusion: subjective / non-price-action markets ──────────
+            if any(excl in q for excl in excluded_kws):
+                continue
+
+            # ── 3. Must belong to at least one tracked asset category ─────────────
+            matched_tag = None
+            for tag, terms in ASSET_TAGS:
+                if any(term in q for term in terms):
+                    matched_tag = tag
+                    break
+            if matched_tag is None:
+                continue  # not a tracked asset, skip
+
+            # ── 4. Expiry guard: drop markets closing within 20 minutes ───────────
+            end_ts = None
+            resolves_at = m.get("resolves_at")
+            if resolves_at:
+                try:
+                    end_ts = datetime.fromisoformat(
+                        str(resolves_at).replace("Z", "+00:00")
+                    )
+                except Exception:
                     end_ts = None
-                    # try resolves_at field first
-                    if m.get("resolves_at"):
-                        try:
-                            from datetime import datetime, timezone
 
-                            end_ts = datetime.fromisoformat(
-                                m.get("resolves_at").replace("Z", "+00:00")
-                            )
-                        except Exception:
-                            end_ts = None
-                    # fallback: attempt parse from question string
-                    if end_ts is None:
-                        try:
-                            # attempt to extract time substring and parse, robust but not perfect
-                            import re
+            if end_ts is None:
+                # Fallback: try ISO datetime embedded in question text
+                try:
+                    import re
+                    match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", q)
+                    if match:
+                        end_ts = datetime.fromisoformat(match.group(0))
+                except Exception:
+                    end_ts = None
 
-                            match = re.search(
-                                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
-                                m.get("question", ""),
-                            )
-                            if match:
-                                end_ts = datetime.fromisoformat(match.group(0))
-                        except Exception:
-                            end_ts = None
-                    if end_ts is not None:
-                        from datetime import datetime, timezone
+            if end_ts is not None:
+                try:
+                    nowdt = datetime.now(timezone.utc)
+                    if end_ts.tzinfo is None:
+                        end_ts = end_ts.replace(tzinfo=timezone.utc)
+                    tte = (end_ts - nowdt).total_seconds()
+                    if tte < _MIN_EXPIRY_SECONDS:
+                        continue  # too close to expiry
+                except Exception:
+                    pass
 
-                        try:
-                            nowdt = datetime.now(timezone.utc)
-                            time_to_end = (end_ts - nowdt).total_seconds()
-                        except Exception:
-                            time_to_end = None
-                        if time_to_end is not None and time_to_end < 3600:
-                            # too little life remaining, skip
-                            continue
-                    # Check for Bitcoin/BTC
-                    has_btc = any(
-                        term in q for term in ["btc", "bitcoin", "bitcoin up or down"]
-                    )
-                    # Liquidity filter: only reject if liquidity field exists and is below threshold
-                    liq_field = m.get("liquidity")
-                    if liq_field is not None:
-                        try:
-                            liquidity = float(liq_field)
-                        except Exception:
-                            liquidity = 0
-                        if liquidity < config.MARKET_FILTER.get("min_liquidity_usd", 0):
-                            continue
-
-                    # Spread filter: if best_bid/best_ask provided, enforce max spread from aggression
-                    try:
-                        bb = float(m.get("best_bid") or 0)
-                        ba = float(m.get("best_ask") or 0)
-                        if bb > 0 and ba > 0:
-                            mid_price = (bb + ba) / 2
-                            spread_pct = (ba - bb) / mid_price * 100
-                            if spread_pct > config.get_max_spread_allowed():
-                                continue
-                    except Exception:
-                        pass
-
-                    if has_btc:
-                        markets.append(m)
-                        crypto_found["btc"] += 1
+            # ── 5. Liquidity filter ───────────────────────────────────────────────
+            liq_field = m.get("liquidity")
+            if liq_field is not None:
+                try:
+                    if float(liq_field) < config.MARKET_FILTER.get("min_liquidity_usd", 0):
                         continue
+                except Exception:
+                    pass
 
-                    # Check for Ethereum/ETH
-                    has_eth = any(
-                        term in q for term in ["eth", "ethereum", "ethereum up or down"]
-                    )
-                    if has_eth:
-                        markets.append(m)
-                        crypto_found["eth"] += 1
+            # ── 6. Spread filter ──────────────────────────────────────────────────
+            try:
+                bb = float(m.get("best_bid") or 0)
+                ba = float(m.get("best_ask") or 0)
+                if bb > 0 and ba > 0:
+                    mid_price = (bb + ba) / 2
+                    spread_pct = (ba - bb) / mid_price * 100
+                    if spread_pct > config.get_max_spread_allowed():
                         continue
+            except Exception:
+                pass
 
-                    # Check for Solana/SOL
-                    has_sol = any(
-                        term in q for term in ["sol", "solana", "solana up or down"]
-                    )
-                    if has_sol:
-                        markets.append(m)
-                        crypto_found["sol"] += 1
-                        continue
-
-                    # Check for Ripple/XRP
-                    has_xrp = any(
-                        term in q for term in ["xrp", "ripple", "ripple up or down"]
-                    )
-                    if has_xrp:
-                        markets.append(m)
-                        crypto_found["xrp"] += 1
-                        continue
+            # ── Passed all filters → add market ──────────────────────────────────
+            markets.append(m)
+            found_counts[matched_tag] += 1
 
     except Exception as e:
         logger.error(f"Market discovery error: {e}")
 
     logger.info(
-        f"Discovered markets - BTC: {crypto_found['btc']}, ETH: {crypto_found['eth']}, SOL: {crypto_found['sol']}"
+        "Discovered markets — "
+        + ", ".join(f"{tag.upper()}: {n}" for tag, n in found_counts.items())
+        + f" | Total: {len(markets)}"
     )
     return markets
 

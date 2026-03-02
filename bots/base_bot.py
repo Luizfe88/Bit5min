@@ -490,6 +490,37 @@ class BaseBot(ABC):
             )
             return {"success": False, "reason": "market_locked"}
 
+        # --- EXPIRY GUARD: skip markets closing within 20 minutes ---
+        _MIN_TTE_SECONDS = 20 * 60  # 20 minutes
+        try:
+            _tte_seconds = None
+            _resolves_at = market.get("resolves_at")
+            if _resolves_at:
+                from datetime import datetime, timezone as _tz
+                _s = str(_resolves_at).strip()
+                if _s.endswith("Z"):
+                    _s = _s[:-1] + "+00:00"
+                _end_dt = datetime.fromisoformat(_s)
+                _now = datetime.now(_tz.utc)
+                if _end_dt.tzinfo is None:
+                    _end_dt = _end_dt.replace(tzinfo=_tz.utc)
+                _tte_seconds = (_end_dt - _now).total_seconds()
+
+            # Fallback: use time_to_resolution from the signal if available
+            if _tte_seconds is None:
+                _tte_seconds = signal.get("time_to_resolution") or signal.get("tte")
+
+            if _tte_seconds is not None and float(_tte_seconds) < _MIN_TTE_SECONDS:
+                logger.info(
+                    f"[{self.name}] Skipping trade: market closes in "
+                    f"{float(_tte_seconds)/60:.1f} min (< 30 min). "
+                    f"Market: {market.get('question', m_id or '')[:60]}"
+                )
+                return {"success": False, "reason": "market_expiring_soon"}
+        except Exception as _expiry_err:
+            logger.debug(f"[{self.name}] Expiry check error (non-blocking): {_expiry_err}")
+        # --- END EXPIRY GUARD ---
+
         # FIX: Hard Price Filter
         current_price = market.get("current_price", 0.5)
         try:
@@ -795,6 +826,7 @@ class BaseBot(ABC):
         """
         try:
             market_id = market.get("id") or market.get("market_id")
+            m_id = market_id  # alias used in some error paths
 
             # Prefer market-provided price; fallback to API fetcher
             price = None
@@ -874,14 +906,14 @@ class BaseBot(ABC):
             # Log to Database
             db_id = db.log_trade(
                 bot_name=self.name,
-                market_id=m_id,
+                market_id=market_id,
                 side=signal["side"],
                 amount=amount,
                 venue="local_paper",
                 mode=mode,
                 confidence=signal.get("confidence"),
                 reasoning=signal.get("reasoning"),
-                market_question=market.get("question") or m_id,
+                market_question=market.get("question") or market_id,
                 trade_id=trade_id,
                 shares_bought=shares,
                 trade_features=signal.get("features"),
