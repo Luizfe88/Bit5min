@@ -592,10 +592,13 @@ class BaseBot(ABC):
             logger.info(
                 f"[{self.name}] RiskManager denied trade: reason={reason} amount={amount} market_id={m_id}"
             )
-            # Se for daily_loss_per_bot, pausar o bot
+            # Pausa o bot se atingiu limite individual (15%) ou global (50%)
             if reason == "daily_loss_per_bot":
                 self._paused = True
-                self._pause_reason = "daily_loss_limit"
+                self._pause_reason = "daily_loss_15pct_individual"
+            elif reason == "daily_loss_global":
+                self._paused = True
+                self._pause_reason = "daily_loss_50pct_global"
             return {"success": False, "reason": reason}
 
         # --- SL/TP Calculation Delegates ---
@@ -846,11 +849,11 @@ class BaseBot(ABC):
                 return {"success": False, "reason": "price_unavailable"}
 
             # --- SQAURE ROOT SLIPPAGE IMPACT MODEL ---
-            m_vol_24h = market.get("volume_24h", 1000.0)
+            m_vol_24h = market.get("volume_24h", 5000.0)
             try:
                 m_vol_24h = float(m_vol_24h)
             except (ValueError, TypeError):
-                m_vol_24h = 1000.0
+                m_vol_24h = 5000.0
 
             # O valor do 'price' captado da API é sempre em relação à probabilidade do YES
             # Se a decisão for "no", a probabilidade base a comprar é 1 - price.

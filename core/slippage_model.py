@@ -25,8 +25,8 @@ class SlippageCalculator:
         base_spread = 0.005      # 0.5% base spread
         impact_factor = 0.025    # Fator de mercado - mais impacto para orders grandes
         
-        # Prevenção de divisão por zero: assumimos floor de 1000 USD de liquidity
-        liquidity = max(float(market_volume_24h), 1000.0)
+        # Prevenção de divisão por zero: assumimos floor de 5000 USD de liquidity
+        liquidity = max(float(market_volume_24h), 5000.0)
         
         # Impact penalty based on square root of order size vs liquidity
         # slippage_pct = c * sqrt(size / liquidity)

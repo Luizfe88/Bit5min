@@ -53,22 +53,27 @@ class ArenaRiskManager:
         )
 
     def _calculate_dynamic_limits(self, bankroll: float):
-        # Configuração Personalizada para $10k ou outros valores
+        # Limites baseados no capital total da arena
+        # REGRA PRINCIPAL:
+        #   - Bot individual: pausa quando perda >= 15% do capital total
+        #   - Global (todos os bots): para TUDO quando perda >= 50% do capital total
 
         pct_trade = config.MAX_POSITION_PCT_OF_BALANCE  # 0.02
         pct_bot = 0.15
         pct_global = config.MAX_TOTAL_POSITION_PCT_OF_BALANCE  # 0.50
 
-        # Daily loss limits - ajustados proporcionalmente
-        pct_loss_bot = 0.05  # 5% por bot
-        pct_loss_global = 0.15  # 15% global
+        # ── NOVOS LIMITES DE PERDA ──────────────────────────────────────
+        pct_loss_bot = config.MAX_LOSS_PCT_PER_BOT    # 15% do capital total → pausa bot
+        pct_loss_global = config.MAX_LOSS_PCT_TOTAL   # 50% do capital total → para TUDO
 
         limits = {
             "profile": "Custom ($10k Setup)",
             "max_trade_size": max(0.90, round(bankroll * pct_trade, 2)),
             "max_pos_per_bot": max(1.20, round(bankroll * pct_bot, 2)),
             "max_global_position": max(2.50, round(bankroll * pct_global, 2)),
+            # Perda máxima por bot = 15% do capital TOTAL da arena
             "max_daily_loss_per_bot": round(bankroll * pct_loss_bot, 2),
+            # Perda máxima global = 50% do capital TOTAL da arena
             "max_daily_loss_global": round(bankroll * pct_loss_global, 2),
         }
 
@@ -88,6 +93,11 @@ class ArenaRiskManager:
                 f"🚨 DRAW DOWN CRÍTICO ({(1 - dd_ratio) * 100:.1f}%) - risco cortado 30-35%"
             )
 
+        logger.debug(
+            f"[RiskManager] Limites calculados | capital=${bankroll:.2f} | "
+            f"loss/bot=${limits['max_daily_loss_per_bot']:.2f} ({pct_loss_bot*100:.0f}%) | "
+            f"loss/global=${limits['max_daily_loss_global']:.2f} ({pct_loss_global*100:.0f}%)"
+        )
         return limits
 
     def _get_peak_bankroll(self):
@@ -100,14 +110,19 @@ class ArenaRiskManager:
     def can_place_trade(
         self, bot_name: str, amount: float, market: dict = None
     ) -> tuple[bool, str]:
-        """ÚNICO lugar onde você verifica risco agora"""
+        """ÚNICO lugar onde você verifica risco agora.
+
+        Regras de pausa:
+          - Bot individual: pausa se perda >= 15% do capital total da arena
+          - Global (todos): bloqueia TUDO se perda >= 50% do capital total da arena
+        """
+        # Atualiza banca com o capital total real sempre que necessário
         if time.time() - self.last_update > 30:
             self.update_bankroll(self._get_current_bankroll())
 
         limits = self.limits
 
-        # 1. Check Duplicates (Novo)
-        # Evita que o mesmo bot abra múltiplas posições no mesmo mercado
+        # 1. Check Duplicates — evita que o mesmo bot abra múltiplas posições no mesmo mercado
         if market:
             market_id = market.get("id") or market.get("market_id")
             if market_id:
@@ -119,7 +134,18 @@ class ArenaRiskManager:
         if amount < config.get_min_trade_amount():
             return False, "amount_below_minimum"
 
-        # 3. Daily loss por bot
+        # ── CHECK 3: PERDA GLOBAL (50% do capital total) ─────────────────────
+        # Checado ANTES do limite por bot para bloquear tudo imediatamente
+        daily_global = db.get_total_daily_loss(self.mode)
+        if daily_global >= limits["max_daily_loss_global"]:
+            # Emite alerta crítico e notifica pelo Telegram
+            self._handle_global_stop(
+                daily_global,
+                limits["max_daily_loss_global"],
+            )
+            return False, "daily_loss_global"
+
+        # ── CHECK 4: PERDA POR BOT (15% do capital total) ────────────────────
         daily_bot = db.get_bot_daily_loss(bot_name, self.mode)
         if daily_bot >= limits["max_daily_loss_per_bot"]:
             self._handle_pause(
@@ -129,11 +155,6 @@ class ArenaRiskManager:
                 limits["max_daily_loss_per_bot"],
             )
             return False, "daily_loss_per_bot"
-
-        # 4. Daily loss arena
-        daily_global = db.get_total_daily_loss(self.mode)
-        if daily_global >= limits["max_daily_loss_global"]:
-            return False, "daily_loss_global"
 
         # 5. Posição por bot
         open_bot = db.get_total_open_position_value(bot_name, self.mode)
@@ -201,11 +222,36 @@ class ArenaRiskManager:
         return {"sl_price": sl_price, "tp_price": tp_price}
 
     def _handle_pause(self, bot_name: str, reason: str, current: float, limit: float):
-        logger.warning(f"[{bot_name}] {reason} → ${current:.2f} >= ${limit:.2f}")
+        """Pausa um bot individual que atingiu 15% de perda do capital total."""
+        pct_used = (current / self.bankroll * 100) if self.bankroll else 0
+        logger.warning(
+            f"⏸️  [{bot_name}] PAUSADO — perda ${current:.2f} "
+            f"({pct_used:.1f}% do capital total) >= limite ${limit:.2f} (15%)"
+        )
         if self.telegram:
             self.telegram.notify_bot_paused(
                 bot_name, reason, loss_amount=current, max_loss=limit
             )
+
+    def _handle_global_stop(self, current: float, limit: float):
+        """Para TODOS os bots quando a perda global atinge 50% do capital total."""
+        pct_used = (current / self.bankroll * 100) if self.bankroll else 0
+        logger.critical(
+            f"🛑 PARADA GLOBAL — perda total ${current:.2f} "
+            f"({pct_used:.1f}% do capital) >= limite ${limit:.2f} (50%). "
+            f"NENHUM novo trade será aberto."
+        )
+        if self.telegram:
+            try:
+                msg = (
+                    f"🚨 <b>PARADA GLOBAL DE EMERGÊNCIA</b> 🚨\n"
+                    f"Perda acumulada: <b>${current:.2f}</b> ({pct_used:.1f}% do capital)\n"
+                    f"Limite: <b>${limit:.2f}</b> (50%)\n"
+                    f"Todos os bots bloqueados para novos trades."
+                )
+                self.telegram.send_message(msg)
+            except Exception as _e:
+                logger.error(f"Falha ao enviar alerta global Telegram: {_e}")
 
     def _get_current_bankroll(self):
         try:

@@ -149,11 +149,11 @@ PAPER_MAX_POSITION = _env_float(
     "BOT_ARENA_PAPER_MAX_POSITION", 50.0
 )  # Reduced to $50 to avoid slippage on short markets
 PAPER_MAX_DAILY_LOSS_PER_BOT = _env_float(
-    "BOT_ARENA_PAPER_MAX_DAILY_LOSS_PER_BOT", 500.0
-)  # 5% of $10k
+    "BOT_ARENA_PAPER_MAX_DAILY_LOSS_PER_BOT", 1500.0
+)  # 15% of $10k — pausa bot individual
 PAPER_MAX_DAILY_LOSS_TOTAL = _env_float(
-    "BOT_ARENA_PAPER_MAX_DAILY_LOSS_TOTAL", 1500.0
-)  # 15% of $10k
+    "BOT_ARENA_PAPER_MAX_DAILY_LOSS_TOTAL", 5000.0
+)  # 50% of $10k — para TUDO
 PAPER_STARTING_BALANCE = _env_float(
     "BOT_ARENA_PAPER_STARTING_BALANCE", 10000.0
 )  # $10k default bankroll
@@ -161,15 +161,16 @@ PAPER_STARTING_BALANCE = _env_float(
 # Risk Limits - Live Mode (stricter - proportional to $10k bankroll)
 LIVE_MAX_POSITION = _env_float("BOT_ARENA_LIVE_MAX_POSITION", 10.0)
 LIVE_MAX_DAILY_LOSS_PER_BOT = _env_float(
-    "BOT_ARENA_LIVE_MAX_DAILY_LOSS_PER_BOT", 500.0
-)  # 5% of $10k bankroll
+    "BOT_ARENA_LIVE_MAX_DAILY_LOSS_PER_BOT", 1500.0
+)  # 15% of $10k — pausa bot individual
 LIVE_MAX_DAILY_LOSS_TOTAL = _env_float(
-    "BOT_ARENA_LIVE_MAX_DAILY_LOSS_TOTAL", 1500.0
-)  # 15% of $10k bankroll
+    "BOT_ARENA_LIVE_MAX_DAILY_LOSS_TOTAL", 5000.0
+)  # 50% of $10k — para TUDO
 
-# Dynamic Loss Limits (based on current capital - for moderate risk profile)
-MAX_LOSS_PCT_PER_BOT = 0.05  # 5% of current bot capital (moderate/conservative)
-MAX_LOSS_PCT_TOTAL = 0.15  # 15% of total current capital (moderate/conservative)
+# Dynamic Loss Limits (baseado no capital total — pausa por bot e parada global)
+# REGRA: bot pausa com 15% de perda do capital total; TODOS param com 50% global
+MAX_LOSS_PCT_PER_BOT = 0.15  # 15% do capital total → pausa o bot individual
+MAX_LOSS_PCT_TOTAL = 0.50   # 50% do capital total → para TODOS os bots
 
 # General Risk Rules (both modes)
 MAX_POSITION_PCT_OF_BALANCE = 0.02  # Never bet more than 2% of balance per trade
@@ -243,7 +244,7 @@ AGGRESSION_THRESHOLDS = {
     "aggressive": {
         "min_edge_after_fees": 0.0012,  # 0.12%
         "min_confidence": 0.48,  # MODO AGGRESSIVE: conforme pedido do usuário (aceita perdas por lucros maiores)
-        "max_spread_allowed": 2.1,  # percent
+        "max_spread_allowed": 1.5,  # percent
         # Hard cap in aggressive mode: prevent flood
         "max_trades_per_hour": 12,
     },
