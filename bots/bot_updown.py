@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
     "rsi_period": 14,
-    "rsi_overbought_entry": 74,  # v3: Entrada agressiva Down
-    "rsi_oversold_entry": 26,  # v3: Entrada agressiva Up
-    "rsi_overbought_sl": 81,  # v3: SL se piorar Down
-    "rsi_oversold_sl": 19,  # v3: SL se piorar Up
+    "rsi_overbought_entry": 65,  # v3: Entrada agressiva Down
+    "rsi_oversold_entry": 35,  # v3: Entrada agressiva Up
+    "rsi_overbought_sl": 75,  # v3: SL se piorar Down
+    "rsi_oversold_sl": 25,  # v3: SL se piorar Up
     "ema_short": 20,
     "ema_long": 50,
     "position_size_pct": 0.01,  # 1% por trade

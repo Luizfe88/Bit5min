@@ -30,7 +30,7 @@ class MomentumBot(BaseBot):
         """Trade in the direction of short-term price momentum."""
         # global regime filter injected by arena; skip when market is not trending
         hurst = signals.get("market_regime", 0.5)
-        if hurst < 0.50:
+        if hurst < 0.35:
             return {
                 "action": "skip",
                 "side": "yes",

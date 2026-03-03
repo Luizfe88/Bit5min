@@ -57,28 +57,46 @@ class HybridBot(BaseBot):
         active_signals = 0
         reasons = []
 
+        valid_signals = []
+        skipped_weight = 0.0
+
         for sig, weight in sub_signals:
-            if sig["action"] == "hold":
+            action = sig.get("action", "hold")
+            if action in ("hold", "skip"):
+                if action == "skip":
+                    skipped_weight += weight
                 continue
-            active_signals += 1
-            direction = 1 if sig["side"] == "yes" else -1
-            weighted_score += direction * sig["confidence"] * weight
+            valid_signals.append({"sig": sig, "weight": weight})
+
+        if valid_signals and skipped_weight > 0.0:
+            extra = skipped_weight / len(valid_signals)
+            for item in valid_signals:
+                item["weight"] += extra
+
+        weighted_score = 0
+        active_signals = len(valid_signals)
+        reasons = []
+        yes_votes = 0
+        no_votes = 0
+
+        for item in valid_signals:
+            sig = item["sig"]
+            weight = item["weight"]
+            direction = 1 if sig.get("side", "yes") == "yes" else -1
+            weighted_score += direction * float(sig.get("confidence", 0.0)) * weight
             reasons.append(f"{sig.get('reasoning', '')[:60]}")
+            if sig.get("side", "yes") == "yes":
+                yes_votes += 1
+            else:
+                no_votes += 1
 
         if active_signals == 0:
             return {
                 "action": "hold",
                 "side": "yes",
                 "confidence": 0,
-                "reasoning": "All sub-strategies say hold",
+                "reasoning": "All sub-strategies say hold or skip",
             }
-
-        yes_votes = sum(
-            1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "yes"
-        )
-        no_votes = sum(
-            1 for s, _ in sub_signals if s["action"] != "hold" and s["side"] == "no"
-        )
 
         # Consensus rule: accept if at least 2/3 of active signals agree OR simple majority + weighted score
         active_count = active_signals
