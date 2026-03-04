@@ -8,7 +8,7 @@ DEFAULT_PARAMS = {
     "fair_value": 0.50,
     "entry_threshold_yes": 0.42,  # Buy YES if price < 0.42
     "entry_threshold_no": 0.58,   # Buy NO if price > 0.58
-    "position_size_pct": 0.10,    # Default size (10% of max pos)
+    "position_size_pct": 0.02,    # Default size (2% of max pos) — normalizado com outros bots
     "min_confidence": 0.60,
 }
 
@@ -43,6 +43,15 @@ class MeanRevBot(BaseBot):
                 
         except (ValueError, TypeError):
             return {"action": "hold", "side": "yes", "confidence": 0, "reasoning": "Invalid price data"}
+
+        # 🔒 Trava Anti-Falling Knife: bloqueia zonas extremas/irreversíveis
+        if price < 0.25 or price > 0.75:
+            return {
+                "action": "skip",
+                "side": "yes",
+                "confidence": 0,
+                "reasoning": f"Price {price:.2f} in extreme zone (<0.25 or >0.75). Anti-falling knife active."
+            }
 
         fair_value = self.strategy_params.get("fair_value", 0.50)
         thresh_yes = self.strategy_params.get("entry_threshold_yes", 0.42)
@@ -88,13 +97,14 @@ class MeanRevBot(BaseBot):
 
     def _calc_amount(self, confidence):
         base_size = config.get_max_position()
-        factor = self.strategy_params.get("position_size_pct", 0.10)
-        
-        # Se confiança muito alta (> 0.85), dobra o tamanho
-        if confidence > 0.85:
-            factor *= 1.5
-            
-        return base_size * factor
+        factor = self.strategy_params.get("position_size_pct", 0.02)
+
+        # Tamanho base calculado
+        amount = base_size * factor
+
+        # Hardcap de segurança: Mean Reversion nunca aloca mais de $350 por trade
+        HARD_CAP = 350.0
+        return min(amount, HARD_CAP)
 
     def make_decision(self, market: dict, signals: dict) -> dict:
         """Override BaseBot.make_decision to skip ML and use Pure Logic."""

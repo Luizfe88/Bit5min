@@ -177,6 +177,11 @@ class BotEvolutionManager:
             self._log_status_if_due(metrics)
             return
         
+        # Inicia evolução em thread separada para não bloquear
+        thread = threading.Thread(target=self._trigger_evolution, args=(metrics.trigger_reason,))
+        thread.daemon = True
+        thread.start()
+
     def _log_status_if_due(self, metrics: 'EvolutionMetrics'):
         """Loga status da evolução a cada 15 minutos"""
         now = datetime.now()
@@ -202,11 +207,6 @@ class BotEvolutionManager:
                 f"⏳ Aguardando trades. {metrics.global_trade_count}/{self.target_trades} "
                 f"(faltam {trades_remaining}) | Safety net em: {safety_str}"
             )
-
-        # Inicia evolução em thread separada para não bloquear
-        thread = threading.Thread(target=self._trigger_evolution, args=(metrics.trigger_reason,))
-        thread.daemon = True
-        thread.start()
     
     def _trigger_evolution(self, trigger_reason: EvolutionTrigger):
         """Inicia processo de evolução"""

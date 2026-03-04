@@ -39,6 +39,8 @@ class ArenaRiskManager:
         self.limits = {}
         self.last_update = 0
         self.open_positions: Dict[str, OpenPosition] = {}
+        self.notified_global_stop = False
+        self.notified_bot_pauses: Dict[str, float] = {}  # {bot_name_reason: last_notify_time}
         logger.info("✅ ArenaRiskManager inicializado")
 
     def update_bankroll(self, bankroll: float):
@@ -237,6 +239,12 @@ class ArenaRiskManager:
 
     def _handle_pause(self, bot_name: str, reason: str, current: float, limit: float):
         """Pausa um bot individual que atingiu 15% de perda do capital total."""
+        # Cooldown de 1 hora para notificações do mesmo bot/motivo
+        key = f"{bot_name}_{reason}"
+        last_notify = self.notified_bot_pauses.get(key, 0)
+        if time.time() - last_notify < 3600:
+            return
+
         pct_used = (current / self.bankroll * 100) if self.bankroll else 0
         logger.warning(
             f"⏸️  [{bot_name}] PAUSADO — perda ${current:.2f} "
@@ -246,24 +254,32 @@ class ArenaRiskManager:
             self.telegram.notify_bot_paused(
                 bot_name, reason, loss_amount=current, max_loss=limit
             )
+            # Track notification time to allow cooldowns if needed
+            self.notified_bot_pauses[f"{bot_name}_{reason}"] = time.time()
 
     def _handle_global_stop(self, current: float, limit: float):
-        """Para TODOS os bots quando a perda global atinge 50% do capital total."""
+        """Para TODOS os bots quando a perda global atinge o limite do capital total."""
         pct_used = (current / self.bankroll * 100) if self.bankroll else 0
+        pct_limit = config.MAX_LOSS_PCT_TOTAL * 100
         logger.critical(
             f"🛑 PARADA GLOBAL — perda total ${current:.2f} "
-            f"({pct_used:.1f}% do capital) >= limite ${limit:.2f} (50%). "
+            f"({pct_used:.1f}% do capital) >= limite ${limit:.2f} ({pct_limit:.0f}%). "
             f"NENHUM novo trade será aberto."
         )
+        if self.notified_global_stop:
+            return
+
         if self.telegram:
             try:
+                pct_limit = config.MAX_LOSS_PCT_TOTAL * 100
                 msg = (
                     f"🚨 <b>PARADA GLOBAL DE EMERGÊNCIA</b> 🚨\n"
                     f"Perda acumulada: <b>${current:.2f}</b> ({pct_used:.1f}% do capital)\n"
-                    f"Limite: <b>${limit:.2f}</b> (50%)\n"
+                    f"Limite: <b>${limit:.2f}</b> ({pct_limit:.0f}%)\n"
                     f"Todos os bots bloqueados para novos trades."
                 )
                 self.telegram.send_message(msg)
+                self.notified_global_stop = True
             except Exception as _e:
                 logger.error(f"Falha ao enviar alerta global Telegram: {_e}")
 
@@ -275,6 +291,8 @@ class ArenaRiskManager:
 
     def reset_daily(self):
         db.reset_arena_day(self.mode)
+        self.notified_global_stop = False
+        self.notified_bot_pauses = {}
         logger.info("RiskManager → daily stats reset após evolução")
 
     def get_floating_pnl(self, market_prices: Dict[str, dict]) -> float:
