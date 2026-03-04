@@ -117,6 +117,9 @@ class BaseBot(ABC):
         self.trailing_distance = self.strategy_params.get("trailing_distance", 0.045)
         self.trailing_step = self.strategy_params.get("trailing_step", 0.015)
 
+        # ML Exploration Control
+        self._last_exploration_time = 0
+
     @abstractmethod
     def analyze(self, market: dict, signals: dict) -> dict:
         """Analyze market + signals and return a trade signal.
@@ -235,8 +238,19 @@ class BaseBot(ABC):
 
         # Dynamic minimum edge based on configured aggression
         min_ev = config.get_min_edge_after_fees()
-        # Log & return skip if edge below threshold
-        if best_ev < float(min_ev):
+        
+        # Epsilon-Greedy Exploration: 2% chance to bypass filters for ML data collection
+        # Added 5-minute cooldown (300s) to ensure data diversification
+        is_exploration = False
+        import time
+        now = time.time()
+        if (now - self._last_exploration_time) > 300: # 5 min cooldown
+            if random.random() < 0.02: # 2% probability
+                is_exploration = True
+                self._last_exploration_time = now
+                logger.info(f"[{self.name}] [ML EXPLORATION] Forced trade for data collection (bypassing min_ev={min_ev:.4f})")
+        
+        if not is_exploration and best_ev < float(min_ev):
             # compute spread percent if available
             spread_pct = None
             try:
@@ -262,6 +276,7 @@ class BaseBot(ABC):
                 "confidence": min(0.95, abs(p_yes - market_price) * 2.5),
                 "reasoning": reason_text,
                 "suggested_amount": 0,
+                "is_exploration": is_exploration,
                 "features": {
                     "x": x,
                     "market_price": market_price,
@@ -325,6 +340,7 @@ class BaseBot(ABC):
             "confidence": confidence,
             "reasoning": reasoning,
             "suggested_amount": float(amount),
+            "is_exploration": signal.get("is_exploration", False) if "signal" in locals() else is_exploration, 
             "features": final_features,
         }
 
@@ -474,7 +490,7 @@ class BaseBot(ABC):
             if hasattr(config, "get_min_confidence")
             else 0.55
         )
-        if conf < float(min_conf):
+        if not signal.get("is_exploration") and conf < float(min_conf):
             logger.info(
                 f"[{self.name}] Signal ignored. Confiança muito baixa ({conf:.2f}) < min_conf={min_conf:.2f}"
             )

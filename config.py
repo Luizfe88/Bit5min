@@ -242,7 +242,7 @@ AGGRESSION_THRESHOLDS = {
         "max_trades_per_hour": _env_int("BOT_ARENA_MAX_TRADES_PER_HOUR_PER_BOT", 20),
     },
     "aggressive": {
-        "min_edge_after_fees": 0.0012,  # 0.12%
+        "min_edge_after_fees": -0.0300,  # ACEITA EV NEGATIVO (-3%) PARA COLETAR DADOS (COLD START)
         "min_confidence": 0.48,  # MODO AGGRESSIVE: conforme pedido do usuário (aceita perdas por lucros maiores)
         "max_spread_allowed": 1.5,  # percent
         # Hard cap in aggressive mode: prevent flood
