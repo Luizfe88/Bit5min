@@ -134,24 +134,38 @@ class ArenaRiskManager:
         if amount < config.get_min_trade_amount():
             return False, "amount_below_minimum"
 
-        # ── CHECK 3: PERDA GLOBAL (50% do capital total) ─────────────────────
-        # Checado ANTES do limite por bot para bloquear tudo imediatamente
-        daily_global = db.get_total_daily_loss(self.mode)
-        if daily_global >= limits["max_daily_loss_global"]:
-            # Emite alerta crítico e notifica pelo Telegram
+        # ── CHECK 3: PnL DIÁRIO GLOBAL (Net PnL + Floating) ───────────────────
+        # Checado ANTES do limite por bot para bloquear tudo se o capital cair 15%
+        
+        # 3a. PnL Realizado Hoje (Líquido: Lucros - Perdas)
+        realized_net = db.get_daily_net_pnl(self.mode)
+        
+        # 3b. PnL Flutuante (Estimado se possível)
+        floating = 0.0
+        if self.open_positions:
+            # Em can_place_trade, talvez não tenhamos market_prices frescos passados por argumento,
+            # mas podemos usar o capital total vs banca inicial como proxy rápido se necessário.
+            # Aqui, para can_place_trade, focamos no Realizado Net + o que o db já sabe das posições abertas.
+            # No entanto, o melhor é usar o realized_net como base sólida.
+            pass
+
+        total_pnl_daily = realized_net # + floating
+        
+        # Se o PnL total for negativo e atingir 15% da banca
+        if total_pnl_daily <= -limits["max_daily_loss_global"]:
             self._handle_global_stop(
-                daily_global,
+                abs(total_pnl_daily),
                 limits["max_daily_loss_global"],
             )
             return False, "daily_loss_global"
 
-        # ── CHECK 4: PERDA POR BOT (15% do capital total) ────────────────────
-        daily_bot = db.get_bot_daily_loss(bot_name, self.mode)
-        if daily_bot >= limits["max_daily_loss_per_bot"]:
+        # ── CHECK 4: PnL DIÁRIO POR BOT (Net PnL Realizado) ──────────────────
+        daily_bot_pnl = db.get_bot_daily_net_pnl(bot_name, self.mode)
+        if daily_bot_pnl <= -limits["max_daily_loss_per_bot"]:
             self._handle_pause(
                 bot_name,
                 "daily_loss_per_bot",
-                daily_bot,
+                abs(daily_bot_pnl),
                 limits["max_daily_loss_per_bot"],
             )
             return False, "daily_loss_per_bot"
@@ -262,6 +276,35 @@ class ArenaRiskManager:
     def reset_daily(self):
         db.reset_arena_day(self.mode)
         logger.info("RiskManager → daily stats reset após evolução")
+
+    def get_floating_pnl(self, market_prices: Dict[str, dict]) -> float:
+        """
+        Calcula o PnL flutuante (não realizado) de todas as posições abertas.
+        market_prices: Dict[market_id] -> {'current_price': float} (preço do YES)
+        """
+        total_floating_pnl = 0.0
+        for trade_id, pos in self.open_positions.items():
+            m_state = market_prices.get(pos.market_id)
+            if not m_state or "current_price" not in m_state:
+                continue
+            
+            current_yes = float(m_state["current_price"])
+            side = pos.direction.lower()
+            
+            if pos.shares > 0:
+                if side == "yes":
+                    # PnL = (Preço Atual - Preço Entrada) * Quantidade
+                    pnl = (current_yes - pos.entry_price) * pos.shares
+                else:
+                    # NO: Ganhamos quando YES cai. 
+                    # Preço Token NO aproximado = 1.0 - Preço YES
+                    # PnL = (Entry_YES - Current_YES) * Quantidade
+                    entry_yes = 1.0 - pos.entry_price
+                    pnl = (entry_yes - current_yes) * pos.shares
+                
+                total_floating_pnl += pnl
+        
+        return total_floating_pnl
 
     def get_current_total_exposure(self) -> float:
         """Get current total exposure across all open positions (in dollars).

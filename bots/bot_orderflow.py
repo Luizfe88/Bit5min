@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
     "flow_sensitivity": 0.3,
-    "min_volume_threshold": 5000,
+    "min_volume_threshold": 500,
     "analysis_period": 15,
     "min_buy_sell_ratio": 1.5,
     "max_buy_sell_ratio": 5.0,

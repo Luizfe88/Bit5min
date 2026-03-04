@@ -127,7 +127,7 @@ class UpDownBot(BaseBot):
 
         # 2. Dados de Preço e Indicadores
         prices = signals.get("prices", [])
-        if len(prices) < 60:  # Precisa de histórico para EMA/RSI (pelo menos 50+14)
+        if len(prices) < 20:  # Precisa de histórico para EMA/RSI (pelo menos 50+14)
             return self._hold(f"dados insuficientes ({len(prices)} candles)")
 
         # Converter para Series do Pandas para facilitar

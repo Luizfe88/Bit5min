@@ -1127,16 +1127,25 @@ class PositionMonitorThread(threading.Thread):
                 market_prices = self._fetch_market_prices()
 
                 if market_prices:
-                    # 2. Check SL/TP via RiskManager
-                    # TRAILING TP IMPLEMENTATION:
-                    # O método check_sl_tp agora lida internamente com a atualização dinâmica
-                    # do Trailing TP para bots habilitados, antes de verificar os hits.
+                    # 2. Check Global Daily PnL (Realized + Floating)
+                    realized_net = db.get_daily_net_pnl(risk_manager.mode)
+                    floating_pnl = risk_manager.get_floating_pnl(market_prices)
+                    total_pnl_daily = realized_net + floating_pnl
+                    
+                    limit = risk_manager.limits.get("max_daily_loss_global", 0)
+                    if total_pnl_daily <= -limit and limit > 0:
+                        risk_manager._handle_global_stop(abs(total_pnl_daily), limit)
+                        # No monitor cycle, just sleep
+                        time.sleep(FAST_POLL_INTERVAL)
+                        continue
+
+                    # 3. Check SL/TP via RiskManager
                     exits = risk_manager.check_sl_tp(market_prices)
 
                     if exits:
                         logger.info(f"Monitor: Found {len(exits)} positions to close.")
 
-                        # 3. Execute exits
+                        # 4. Execute exits
                         for pos, reason, current_price in exits:
                             risk_manager.close_position(pos, reason, current_price)
 
@@ -1325,6 +1334,13 @@ def main_loop(bots, api_key):
 
     while True:
         try:
+            # === Watchdog Heartbeat ===
+            try:
+                with open(".heartbeat", "w") as f:
+                    f.write(str(time.time()))
+            except Exception:
+                pass
+
             # === Log Periódico de Status (15min) ===
             if time.time() - last_status_log > STATUS_LOG_INTERVAL:
                 try:

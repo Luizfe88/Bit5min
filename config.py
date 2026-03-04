@@ -170,7 +170,7 @@ LIVE_MAX_DAILY_LOSS_TOTAL = _env_float(
 # Dynamic Loss Limits (baseado no capital total — pausa por bot e parada global)
 # REGRA: bot pausa com 15% de perda do capital total; TODOS param com 50% global
 MAX_LOSS_PCT_PER_BOT = 0.15  # 15% do capital total → pausa o bot individual
-MAX_LOSS_PCT_TOTAL = 0.50   # 50% do capital total → para TODOS os bots
+MAX_LOSS_PCT_TOTAL = 0.15   # 15% do capital total → para TODOS os bots
 
 # General Risk Rules (both modes)
 MAX_POSITION_PCT_OF_BALANCE = 0.02  # Never bet more than 2% of balance per trade

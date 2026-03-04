@@ -8,7 +8,7 @@ DEFAULT_PARAMS = {
     "momentum_weight": 0.50,
     "mean_rev_weight": 0.50,
     "sentiment_weight": 0.0,
-    "confidence_threshold": 0.60,
+    "confidence_threshold": 0.40,
     "agreement_bonus": 0.15,
     "position_size_pct": 0.05,
     "min_confidence": 0.5,

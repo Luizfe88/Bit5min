@@ -427,6 +427,36 @@ def get_total_daily_loss(mode="paper"):
         return abs(dict(row)["total_loss"])
 
 
+def get_daily_net_pnl(mode="paper"):
+    """
+    Returns the SUM of all PnL (realized) resolved today (since last reset).
+    Positive = profit, Negative = net loss.
+    """
+    with get_conn() as conn:
+        now_utc = datetime.utcnow()
+        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        reset_key = f"daily_loss_reset_at:{mode}"
+        reset_at = get_arena_state(reset_key)
+        cutoff = today_start
+        if reset_at:
+            try:
+                ra = datetime.strptime(reset_at, "%Y-%m-%d %H:%M:%S")
+                if ra > cutoff:
+                    cutoff = ra
+            except Exception:
+                pass
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(pnl), 0) as net_pnl
+            FROM trades
+            WHERE mode=? AND created_at>=? AND outcome IS NOT NULL
+        """,
+            (mode, cutoff_str),
+        ).fetchone()
+        return float(dict(row)["net_pnl"])
+
+
 def get_bot_daily_loss(bot_name, mode="paper"):
     with get_conn() as conn:
         # Compute cutoff: start of today OR manual reset time, whichever is later
@@ -452,6 +482,35 @@ def get_bot_daily_loss(bot_name, mode="paper"):
             (bot_name, mode, cutoff_str),
         ).fetchone()
         return abs(dict(row)["total_loss"])
+
+
+def get_bot_daily_net_pnl(bot_name, mode="paper"):
+    """
+    Returns the SUM of all PnL (realized) for a specific bot resolved today.
+    """
+    with get_conn() as conn:
+        now_utc = datetime.utcnow()
+        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        reset_key = f"daily_loss_reset_at:{mode}"
+        reset_at = get_arena_state(reset_key)
+        cutoff = today_start
+        if reset_at:
+            try:
+                ra = datetime.strptime(reset_at, "%Y-%m-%d %H:%M:%S")
+                if ra > cutoff:
+                    cutoff = ra
+            except Exception:
+                pass
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(pnl), 0) as net_pnl
+            FROM trades
+            WHERE bot_name=? AND mode=? AND created_at>=? AND outcome IS NOT NULL
+        """,
+            (bot_name, mode, cutoff_str),
+        ).fetchone()
+        return float(dict(row)["net_pnl"])
 
 
 def get_active_bot_names():
