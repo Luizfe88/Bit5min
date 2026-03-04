@@ -40,9 +40,9 @@ class EvolutionMetrics:
 class BotEvolutionManager:
     """
     Gerencia evolução de bots baseada em:
-    - Gatilho principal: 100 trades resolvidos (global)
-    - Safety net: máximo 8 horas sem evolução
-    - Cooldown mínimo: 5 horas entre evoluções
+    - Gatilho principal: 200 trades resolvidos (global)
+    - Safety net: máximo 12 horas sem evolução (mesmo sem 200 trades)
+    - Cooldown mínimo: 5 horas entre evoluções (mesmo com 200+ trades)
     """
     
     def __init__(self, bots_source=None):
@@ -54,6 +54,8 @@ class BotEvolutionManager:
         self.target_trades = 200
         self.lock = threading.Lock()
         self._bots_source = bots_source  # Função para obter bots ativos
+        self._last_status_log = None    # Controla log de status a cada 15 min
+        self.status_log_interval = 15 * 60  # 15 minutos em segundos
         self._load_state()
         
         logger.info(f"🧬 BotEvolutionManager iniciado - Target: {self.target_trades} trades, "
@@ -162,18 +164,45 @@ class BotEvolutionManager:
         )
     
     def _evaluate_evolution_trigger(self):
-        """Avalia se deve iniciar evolução baseado nas regras"""
+        """Avalia se deve iniciar evolução baseado nas regras:
+        - Evolui após 200 trades, mas nunca antes de 5h (cooldown)
+        - Safety net: após 12h sem evolução, evolui mesmo sem 200 trades
+        """
         if self.evolution_in_progress:
             return
         
         metrics = self.get_metrics()
         
         if not metrics.can_evolve:
-            if metrics.cooldown_active:
-                remaining_cooldown = timedelta(hours=self.cooldown_hours) - metrics.time_since_last_evolution
-                logger.debug(f"⏱️  Cooldown ativo. Próxima evolução em: {remaining_cooldown}")
+            self._log_status_if_due(metrics)
             return
         
+    def _log_status_if_due(self, metrics: 'EvolutionMetrics'):
+        """Loga status da evolução a cada 15 minutos"""
+        now = datetime.now()
+        if self._last_status_log and (now - self._last_status_log).total_seconds() < self.status_log_interval:
+            return  # Ainda não chegou o momento de logar
+
+        self._last_status_log = now
+        trades_remaining = max(0, self.target_trades - metrics.global_trade_count)
+
+        if metrics.cooldown_active:
+            remaining_cooldown = timedelta(hours=self.cooldown_hours) - metrics.time_since_last_evolution
+            # Formata como HH:MM sem microsegundos
+            remaining_str = str(remaining_cooldown).split('.')[0]
+            logger.info(
+                f"⏱️  Cooldown ativo. Próxima evolução em: {remaining_str} | "
+                f"Trades: {metrics.global_trade_count}/{self.target_trades} "
+                f"(faltam {trades_remaining})"
+            )
+        else:
+            time_until_safety = timedelta(seconds=self.max_time_without_evolution) - metrics.time_since_last_evolution
+            safety_str = str(time_until_safety).split('.')[0]
+            logger.info(
+                f"⏳ Aguardando trades. {metrics.global_trade_count}/{self.target_trades} "
+                f"(faltam {trades_remaining}) | Safety net em: {safety_str}"
+            )
+
         # Inicia evolução em thread separada para não bloquear
         thread = threading.Thread(target=self._trigger_evolution, args=(metrics.trigger_reason,))
         thread.daemon = True
