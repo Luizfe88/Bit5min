@@ -39,7 +39,10 @@ def main():
             
         # Start arena as a subprocess
         # We pass all arguments received by watchdog.py to arena.py
-        process = subprocess.Popen([sys.executable, ARENA_SCRIPT] + sys.argv[1:])
+        process = subprocess.Popen(
+            [sys.executable, ARENA_SCRIPT] + sys.argv[1:],
+            creationflags=subprocess.CREATE_NEW_CONSOLE
+        )
         
         last_check_time = time.time()
         start_time = time.time()
