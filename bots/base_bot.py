@@ -595,9 +595,13 @@ class BaseBot(ABC):
             )
             return {"success": False, "reason": "position_below_minimum"}
 
-        # Dynamic Size uses its own multiplier based on 50% Bankroll rules, and no longer
-        # blindly restricted by max_pos which caused sizing artificial limits on $10k bankrolls.
-        # amount = min(amount, max_pos)  <-- REMOVIDO para sizing dinâmico funcionar livremente.
+        # Enforce hard cap per trade of 2% of total capital (User requested strict limit)
+        max_position_cap = total_capital * getattr(config, "MAX_POSITION_PCT_OF_BALANCE", 0.02)
+        if amount > max_position_cap:
+            logger.info(
+                f"[{self.name}] Capping requested position size ${amount:.2f} to max ${max_position_cap:.2f} (2%)."
+            )
+            amount = max_position_cap
 
         # Usar o RiskManager centralizado
         allowed, reason = risk_manager.can_place_trade(
