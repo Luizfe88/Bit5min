@@ -136,6 +136,13 @@ class ArenaRiskManager:
         if amount < config.get_min_trade_amount():
             return False, "amount_below_minimum"
 
+        # 2.5 Tamanho máximo absoluto (Hard Cap 2%)
+        if amount > limits["max_trade_size"]:
+            logger.warning(
+                f"[{bot_name}] 🚫 Trade estruturalmente rejeitado (Risco): Amount ${amount:.2f} excede o hard cap de 2% (${limits['max_trade_size']:.2f})"
+            )
+            return False, "amount_exceeds_maximum"
+
         # ── CHECK 3: PnL DIÁRIO GLOBAL (Net PnL + Floating) ───────────────────
         # Checado ANTES do limite por bot para bloquear tudo se o capital cair 15%
         
