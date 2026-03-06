@@ -126,9 +126,12 @@ class HybridBot(BaseBot):
             }
 
         side = "yes" if weighted_score > 0 else "no"
-        import config
-
-        amount = config.get_max_position() * self.strategy_params["position_size_pct"]
+        import db
+        try:
+            total_cap = db.get_total_current_capital(config.get_current_mode())
+        except Exception:
+            total_cap = config.PAPER_STARTING_BALANCE
+        amount = total_cap * self.strategy_params["position_size_pct"]
 
         return {
             "action": "buy",

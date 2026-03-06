@@ -74,8 +74,12 @@ class SentimentBot(BaseBot):
 
         if combined > bullish_thresh:
             confidence = min(0.95, 0.5 + (combined - bullish_thresh) * 2)
-            import config
-            amount = config.get_max_position() * self.strategy_params["position_size_pct"]
+            import db
+            try:
+                total_cap = db.get_total_current_capital(config.get_current_mode())
+            except Exception:
+                total_cap = config.PAPER_STARTING_BALANCE
+            amount = total_cap * self.strategy_params["position_size_pct"]
             return {
                 "action": "buy",
                 "side": "yes",
@@ -86,8 +90,12 @@ class SentimentBot(BaseBot):
 
         if combined < bearish_thresh:
             confidence = min(0.95, 0.5 + (bearish_thresh - combined) * 2)
-            import config
-            amount = config.get_max_position() * self.strategy_params["position_size_pct"]
+            import db
+            try:
+                total_cap = db.get_total_current_capital(config.get_current_mode())
+            except Exception:
+                total_cap = config.PAPER_STARTING_BALANCE
+            amount = total_cap * self.strategy_params["position_size_pct"]
             return {
                 "action": "buy",
                 "side": "no",

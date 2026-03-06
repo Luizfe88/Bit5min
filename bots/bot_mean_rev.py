@@ -96,14 +96,20 @@ class MeanRevBot(BaseBot):
         }
 
     def _calc_amount(self, confidence):
-        base_size = config.get_max_position()
+        import db
+        try:
+            total_capital = db.get_total_current_capital(self.strategy_params.get("mode", config.get_current_mode()))
+        except Exception:
+            total_capital = config.PAPER_STARTING_BALANCE
+            
+        # Use 2% of total capital as base factor
         factor = self.strategy_params.get("position_size_pct", 0.02)
 
-        # Tamanho base calculado
-        amount = base_size * factor
+        # Tamanho base calculado (2% do capital atual)
+        amount = total_capital * factor
 
-        # Hardcap de segurança: Mean Reversion nunca aloca mais de $350 por trade
-        HARD_CAP = 350.0
+        # Hardcap de segurança: Mean Reversion nunca aloca mais de $350 por trade ou 5% do capital
+        HARD_CAP = min(350.0, total_capital * 0.05)
         return min(amount, HARD_CAP)
 
     def make_decision(self, market: dict, signals: dict) -> dict:

@@ -99,9 +99,13 @@ class MomentumBot(BaseBot):
             }
 
         side = "yes" if pct_change > 0 else "no"
+        import db
         import config
-
-        amount = config.get_max_position() * self.strategy_params["position_size_pct"]
+        try:
+            total_cap = db.get_total_current_capital(config.get_current_mode())
+        except Exception:
+            total_cap = config.PAPER_STARTING_BALANCE
+        amount = total_cap * self.strategy_params["position_size_pct"]
 
         return {
             "action": "buy",

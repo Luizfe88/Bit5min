@@ -1317,15 +1317,13 @@ def main_loop(bots, api_key):
 
     # Inicializar RiskManager com a bankroll atual
     try:
-        # Tentar obter bankroll do dashboard ou usar valor padrão
-        bankroll = float(
-            db.get_arena_state("virtual_bankroll", config.PAPER_STARTING_BALANCE)
-        )
+        # Usar o helper dinâmico que considera PnL + Banca Inicial
+        bankroll = float(db.get_total_current_capital(config.get_current_mode()))
         risk_manager.update_bankroll(bankroll)
-        logger.info(f"RiskManager inicializado com bankroll: ${bankroll:.2f}")
+        logger.info(f"RiskManager inicializado com bankroll dinâmico: ${bankroll:.2f}")
     except Exception as e:
         logger.warning(
-            f"Não foi possível obter bankroll do dashboard, usando padrão: {e}"
+            f"Não foi possível obter bankroll dinâmico, usando fallback: {e}"
         )
         risk_manager.update_bankroll(config.PAPER_STARTING_BALANCE)
 

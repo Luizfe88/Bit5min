@@ -363,8 +363,12 @@ def get_current_mode():
 
 
 def get_max_position():
-    """Get max position size based on current mode"""
-    return LIVE_MAX_POSITION if TRADING_MODE == "live" else PAPER_MAX_POSITION
+    """Get max position size based on current mode (returns current total bankroll as reference)"""
+    import db
+    try:
+        return db.get_total_current_capital(TRADING_MODE)
+    except Exception:
+        return LIVE_MAX_POSITION if TRADING_MODE == "live" else PAPER_MAX_POSITION
 
 
 def get_max_daily_loss_per_bot():

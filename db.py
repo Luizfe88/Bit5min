@@ -676,12 +676,16 @@ def get_total_open_position_value_all_bots(mode="paper"):
 
 def get_bot_current_capital(bot_name, mode="paper"):
     """Get current capital for a specific bot (initial + PnL acumulado)"""
+    import config
     with get_conn() as conn:
-        # Get initial capital (assume $10 for paper, $10000 for live if not specified)
+        active_bots = get_active_bot_names()
+        num_bots = max(1, len(active_bots))
+        
+        # Get initial capital distributed evenly
         if mode == "paper":
-            initial_capital = 10.0
+            initial_capital = config.PAPER_STARTING_BALANCE / num_bots
         else:
-            initial_capital = 10000.0
+            initial_capital = config.LIVE_STARTING_BALANCE / num_bots
 
         # Get total PnL for this bot
         row = conn.execute(
@@ -698,16 +702,26 @@ def get_bot_current_capital(bot_name, mode="paper"):
 
 
 def get_total_current_capital(mode="paper"):
-    """Get total current capital across all bots"""
-    bot_names = get_active_bot_names()
-    if not bot_names:
-        return 10000.0 if mode == "live" else 10.0
-
-    total_capital = 0.0
-    for bot_name in bot_names:
-        total_capital += get_bot_current_capital(bot_name, mode)
-
-    return total_capital
+    """Get total current capital across all bots (Initial + PnL)"""
+    import config
+    
+    # Base capital from config
+    initial = config.PAPER_STARTING_BALANCE if mode == "paper" else config.LIVE_STARTING_BALANCE
+    
+    # If we have a virtual_bankroll in state, we use it as a reference if it was recently set
+    # but the primary source of truth for "change" is the trades table PnL.
+    try:
+        with get_conn() as conn:
+            # Pega o PnL total realisado
+            row_pnl = conn.execute(
+                "SELECT COALESCE(SUM(pnl), 0) as total_pnl FROM trades WHERE mode=? AND outcome IS NOT NULL",
+                (mode,)
+            ).fetchone()
+            total_realized_pnl = float(dict(row_pnl)["total_pnl"])
+            
+            return float(initial) + total_realized_pnl
+    except Exception:
+        return float(initial)
 
 
 # ===== FUNÇÕES PARA SISTEMA DE EVOLUÇÃO POR TRADES =====

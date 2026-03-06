@@ -211,9 +211,12 @@ class UpDownBot(BaseBot):
         side = "yes" if signal > 0 else "no"
 
         # Sizing
-        amount = (
-            config.PAPER_STARTING_BALANCE * self.strategy_params["position_size_pct"]
-        )
+        import db
+        try:
+            total_cap = db.get_total_current_capital(config.get_current_mode())
+        except Exception:
+            total_cap = config.PAPER_STARTING_BALANCE
+        amount = total_cap * self.strategy_params["position_size_pct"]
 
         # Determinar perfil de risco para salvar no trade
         profile_name, profile_data = self._get_risk_profile(market)

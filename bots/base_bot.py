@@ -571,13 +571,16 @@ class BaseBot(ABC):
         # ===== DYNAMIC CONFIDENCE-BASED POSITION SIZING (NEW) =====
         # Get current total exposure and total capital for sizing calculation
         try:
-            total_capital = (
-                config.PAPER_STARTING_BALANCE
-                if mode == "paper"
-                else config.LIVE_STARTING_BALANCE
-            )
+            total_capital = db.get_total_current_capital(mode)
         except:
-            total_capital = 10000.0  # Fallback
+            try:
+                total_capital = (
+                    config.PAPER_STARTING_BALANCE
+                    if mode == "paper"
+                    else config.LIVE_STARTING_BALANCE
+                )
+            except:
+                total_capital = 10000.0  # Fallback
 
         try:
             # Get current total exposure across all open positions

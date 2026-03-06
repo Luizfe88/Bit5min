@@ -93,8 +93,12 @@ class OrderflowBot(BaseBot):
         side = "yes" if signal_val > 0 else "no"
         
         # Calcular tamanho da posição sugerida
-        import config
-        amount = config.get_max_position() * 0.1 # 10% do max position por padrão para este bot
+        import db
+        try:
+            total_cap = db.get_total_current_capital(config.get_current_mode())
+        except Exception:
+            total_cap = config.PAPER_STARTING_BALANCE
+        amount = total_cap * 0.02  # Default 2% para este bot se não houver cálculo de força
         
         return {
             "action": "buy",
@@ -387,15 +391,13 @@ class OrderflowBot(BaseBot):
         """
         Obtém tamanho máximo de posição baseado na banca atual.
         """
-        # Usar o RiskManager para obter limites atuais
-        from core.risk_manager import risk_manager
-        
-        # Atualizar bankroll se necessário
-        if time.time() - risk_manager.last_update > 30:
-            risk_manager.update_bankroll(risk_manager._get_current_bankroll())
-        
-        # Retornar limite de posição por bot
-        return risk_manager.limits.get("max_pos_per_bot", 50.0)
+        import db
+        import config
+        try:
+            total_cap = db.get_total_current_capital(config.get_current_mode())
+            return total_cap * 0.02 # Hard cap de 2% do capital total
+        except Exception:
+            return 50.0
     
     def should_exit_position(self, position: Dict[str, Any], market: Dict[str, Any]) -> Dict[str, Any]:
         """
