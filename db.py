@@ -23,6 +23,7 @@ def init_db():
                 confidence REAL,
                 reasoning TEXT,
                 trade_features TEXT,
+                owner_tag TEXT,
                 venue TEXT NOT NULL,
                 mode TEXT NOT NULL,
                 trade_id TEXT,
@@ -102,7 +103,11 @@ def init_db():
                 total_trades INTEGER DEFAULT 0,
                 win_rate REAL,
                 total_pnl REAL DEFAULT 0,
-                active INTEGER DEFAULT 1
+                active INTEGER DEFAULT 1,
+                profile_type TEXT DEFAULT 'standard',
+                ignore_dust_under REAL DEFAULT 50.0,
+                max_slippage_offset REAL DEFAULT 0.02,
+                timeout_seconds INTEGER DEFAULT 120
             );
 
             CREATE TABLE IF NOT EXISTS copytrading_trades (
@@ -157,13 +162,14 @@ def log_trade(
     trade_features=None,
     sl_price=None,
     tp_price=None,
+    owner_tag=None,
 ):
     with get_conn() as conn:
         cursor = conn.execute(
             """INSERT INTO trades (bot_name, market_id, market_question, side, amount,
                confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought,
-               sl_price, tp_price, current_sl, current_tp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               sl_price, tp_price, current_sl, current_tp, owner_tag)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 bot_name,
                 market_id,
@@ -181,6 +187,7 @@ def log_trade(
                 tp_price,
                 sl_price,
                 tp_price,
+                owner_tag,
             ),
         )
         return cursor.lastrowid
@@ -883,6 +890,15 @@ def _ensure_evolution_events_schema():
 
 
 # Inicialização
+
+def get_copytrading_wallet(address):
+    """Retrieve all configurable settings for a tracked wallet."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM copytrading_wallets WHERE address=?",
+            (address,)
+        ).fetchone()
+        return dict(row) if row else None
 init_db()
 _create_resolved_trades_table()
 _ensure_evolution_events_schema()

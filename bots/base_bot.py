@@ -769,6 +769,7 @@ class BaseBot(ABC):
                         id=result.get("db_id"), # NEW: Pass the DB row ID
                         shares=shares,
                         token_id=token_id,
+                        owner_tag=self.name, # Pass owner_tag to OpenPosition
                         # Trailing TP Configuration
                         trailing_enabled=getattr(self, "trailing_enabled", False),
                         trailing_distance=getattr(self, "trailing_distance", None),
@@ -942,6 +943,7 @@ class BaseBot(ABC):
                 trade_features=signal.get("features"),
                 sl_price=signal["sl_price"],
                 tp_price=signal["tp_price"],
+                owner_tag=self.name,
             )
 
             amt_s = f"{amount:.4f}" if float(amount) < 0.01 else f"{amount:.2f}"
@@ -1031,6 +1033,7 @@ class BaseBot(ABC):
                 trade_features=signal.get("features"),
                 sl_price=signal.get("sl_price"),
                 tp_price=signal.get("tp_price"),
+                owner_tag=self.name,
             )
             
             result["db_id"] = db_id # Inject DB id into result

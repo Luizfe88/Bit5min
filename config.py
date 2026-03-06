@@ -341,6 +341,8 @@ PRICE_UPDATE_INTERVAL_SEC = 1  # Real-time price updates
 COPYTRADING_ENABLED = True
 COPYTRADING_MAX_WALLETS_TO_TRACK = 10
 COPYTRADING_POSITION_SIZE_FRACTION = 0.5  # Copy 50% of whale's position size
+COPY_MIN_PRICE = 0.10  # Não copia trades se o alvo pagou menos de 10 centavos
+COPY_MAX_PRICE = 0.85  # Não copia trades se o alvo pagou mais de 85 centavos
 
 # Dashboard Settings
 DASHBOARD_PORT = 8510

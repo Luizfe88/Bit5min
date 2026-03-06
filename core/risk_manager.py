@@ -620,17 +620,37 @@ class ArenaRiskManager:
                     logger.error(f"Erro ao fechar {pos.trade_id}: token_id ausente")
                     return
 
-                res = polymarket_client.place_market_order(
-                    token_id=pos.token_id, side="sell", amount=pos.shares
-                )
-                if res.get("success"):
+                # --- 29 SECOND PATCH (Synchronized Sell) ---
+                logger.info(f"[{pos.bot_name}] Inciando Synchronized Sell (29 Second Patch) para {pos.market_id}...")
+                
+                # 1. State Refresh: Cancel All Market Orders
+                polymarket_client.cancel_all_market_orders(pos.market_id)
+                
+                # 2. State Refresh: Pull Exact Balance
+                actual_balance = polymarket_client.get_token_balance(pos.token_id)
+                
+                # 3. Calculate safe sell amount isolated to this owner_tag
+                # If balance is less than expected, sell whatever is left to prevent error.
+                sell_amount = min(pos.shares, actual_balance) if actual_balance > 0 else 0
+                
+                if sell_amount <= 0:
+                    logger.warning(f"[{pos.bot_name}] Synchronized Sell abortado: Saldo zero ou insuficiente ({actual_balance}) para {getattr(pos, 'owner_tag', 'N/A')}.")
+                    # Define success as True to remove from tracking, there's nothing to sell anyway
                     success = True
-                    # Em live, usa o preço real de execução
-                    exec_price = float(res.get("price", current_price))
                 else:
-                    logger.error(
-                        f"Falha ao fechar posição live {pos.trade_id}: {res.get('error')}"
+                    logger.info(f"[{pos.bot_name}] Synchronized Sell: Tag={getattr(pos, 'owner_tag', 'N/A')}, Target={pos.shares}, Live Balance={actual_balance}. Vendendo={sell_amount}")
+                    
+                    res = polymarket_client.place_market_order(
+                        token_id=pos.token_id, side="sell", amount=sell_amount
                     )
+                    if res.get("success"):
+                        success = True
+                        # Em live, usa o preço real de execução
+                        exec_price = float(res.get("price", current_price))
+                    else:
+                        logger.error(
+                            f"Falha ao fechar posição live {pos.trade_id}: {res.get('error')}"
+                        )
 
             else:
                 # Paper trading

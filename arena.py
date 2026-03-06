@@ -1037,7 +1037,7 @@ def restore_open_positions():
             rows = conn.execute("""
                 SELECT 
                     id, bot_name, market_id, side, amount, shares_bought, 
-                    current_sl, current_tp, tp_triggered, trade_features, reasoning, created_at
+                    current_sl, current_tp, tp_triggered, trade_features, reasoning, created_at, owner_tag, trade_id
                 FROM trades
                 WHERE outcome IS NULL
             """).fetchall()
@@ -1075,6 +1075,7 @@ def restore_open_positions():
                     tp_price=r["current_tp"] or r.get("tp_price"),
                     trade_id=r["trade_id"],  # FIXED: Use the Simmer transaction ID
                     id=r["id"],  # FIXED: Use the database row ID
+                    owner_tag=r["owner_tag"], # Restore owner_tag
                     shares=shares,
                     tp_triggered=bool(r["tp_triggered"]),
                     # Se TP já triggou, trailing deve estar ligado

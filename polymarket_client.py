@@ -134,3 +134,45 @@ def verify_connection() -> dict:
         return {"connected": True, "status": ok}
     except Exception as e:
         return {"connected": False, "error": str(e)}
+
+def cancel_order(order_id: str) -> dict:
+    """Cancel an active order by its ID."""
+    try:
+        client = get_client()
+        result = client.cancel(order_id)
+        logger.info(f"Polymarket order {order_id} cancelled.")
+        return {"success": True, "result": result}
+    except Exception as e:
+        logger.error(f"Failed to cancel order {order_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+def cancel_all_market_orders(market_id: str) -> dict:
+    """The 29 Second Patch: Cancel all active limit orders for a specific market to prevent ghost positions."""
+    try:
+        client = get_client()
+        result = client.cancel_market_orders(market_id)
+        logger.info(f"All orders for market {market_id} cancelled successfully.")
+        return {"success": True, "result": result}
+    except Exception as e:
+        logger.error(f"Failed to cancel market orders for {market_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+def get_token_balance(token_id: str) -> float:
+    """State Refresh: Forceably pull the exact balance of shares in possession for a token_id."""
+    try:
+        client = get_client()
+        from py_clob_client.clob_types import BalanceAllowanceParams
+        params = BalanceAllowanceParams(asset_type="ERC1155", token_id=token_id)
+        result = client.get_balance_allowance(params)
+        # Assuming result contains balance, parse it (usually string of wei or float)
+        # py_clob_client usually scales correctly or returns raw. Let's assume it returns a dict with 'balance'
+        if isinstance(result, dict) and 'balance' in result:
+            return float(result['balance'])
+        elif hasattr(result, 'balance'):
+            return float(result.balance)
+        else:
+            logger.warning(f"Unexpected balance result format: {result}")
+            return 0.0
+    except Exception as e:
+        logger.error(f"Failed to get token balance for {token_id}: {e}")
+        return 0.0
