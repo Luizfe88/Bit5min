@@ -18,14 +18,14 @@ def mostrar_evolucao():
 
     # Pega todos os bots ordenados por geração (do mais novo para o mais velho)
     cursor.execute("""
-        SELECT bot_name, strategy_type, generation, params, lineage 
+        SELECT bot_name, strategy_type, generation, params, lineage, datetime(created_at, 'localtime') as created_at 
         FROM bot_configs 
         ORDER BY strategy_type, generation ASC
     """)
     bots = cursor.fetchall()
     conn.close()
 
-    print(f"{'BOT NAME':<25} | {'GEN':<3} | {'DNA (PARAMETROS MUDADOS)'}")
+    print(f"{'BOT NAME':<25} | {'HORÁRIO':<19} | {'GEN':<3} | {'DNA (PARAMETROS MUDADOS)'}")
     print("-" * 100)
 
     # Agrupa por estratégia para comparar pai vs filho
@@ -38,7 +38,10 @@ def mostrar_evolucao():
         
         if strat not in history:
             history[strat] = []
-        history[strat].append({'name': bot['bot_name'], 'gen': gen, 'params': params})
+        
+        # Obter o horário, se disponível
+        horario = bot['created_at'] if 'created_at' in bot.keys() else 'N/A'
+        history[strat].append({'name': bot['bot_name'], 'gen': gen, 'params': params, 'horario': horario})
 
     # Mostra a comparação
     for strat, generations in history.items():
@@ -59,7 +62,8 @@ def mostrar_evolucao():
                             changes.append(f"{key}: {pai_fmt} -> {val_fmt}")
                     diff = " | ".join(changes)
                 
-                print(f"{bot['name']:<25} | G{bot['gen']:<2} | {diff}")
+                horario_fmt = bot.get('horario', 'N/A')
+                print(f"{bot['name']:<25} | {horario_fmt:<19} | G{bot['gen']:<2} | {diff}")
         else:
             # Robôs que não evoluíram
             pass

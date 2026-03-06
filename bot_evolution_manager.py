@@ -75,8 +75,8 @@ class BotEvolutionManager:
             # Conta trades resolvidos APÓS a última evolução
             with db.get_conn() as conn:
                 cursor = conn.cursor()
-                # Timestamp da última evolução para filtro
-                last_evo_ts = self.last_evolution_time.strftime('%Y-%m-%d %H:%M:%S')
+                # Timestamp da última evolução para filtro (em UTC para a query)
+                last_evo_ts = datetime.utcfromtimestamp(self.last_evolution_time.timestamp()).strftime('%Y-%m-%d %H:%M:%S')
                 
                 # Query: Trades resolvidos com resolved_at > last_evolution_time
                 cursor.execute("""

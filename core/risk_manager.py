@@ -292,9 +292,11 @@ class ArenaRiskManager:
 
     def _get_current_bankroll(self):
         try:
-            return config.PAPER_STARTING_BALANCE
+            return db.get_total_current_capital(self.mode)
         except:
-            return 13.06
+            if self.mode == "paper":
+                return config.PAPER_STARTING_BALANCE
+            return 10000.0
 
     def reset_daily(self):
         db.reset_arena_day(self.mode)
