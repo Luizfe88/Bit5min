@@ -212,11 +212,11 @@ MIN_TRADE_AMOUNT = _env_float(
 # Evolution Settings
 EVOLUTION_INTERVAL_HOURS = 24  # Trigger evolution every 24h if sample size met
 EVOLUTION_MAX_HOURS = 24  # Max time without evolution
-EVOLUTION_MIN_HOURS_COOLDOWN = 5  # Min time between evolutions
-EVOLUTION_MIN_TRADES = 200  # Target trades for threshold trigger
+EVOLUTION_MIN_HOURS_COOLDOWN = 24  # Min time between evolutions (Increased from 5h to 24h)
+EVOLUTION_MIN_TRADES = 50  # Target trades for threshold trigger (Reduced from 200 to 50)
 MIN_SAMPLE_SIZE_EVOLUTION = 50  # Minimum resolved trades needed for time-based trigger
 EVOLUTION_MIN_RESOLVED_TRADES = (
-    200  # Target resolved trades for threshold trigger
+    50  # Target resolved trades for threshold trigger (Reduced from 200 to 50)
 )
 
 MUTATION_RATE = 0.10

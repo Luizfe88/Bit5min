@@ -1,6 +1,6 @@
 """
 Bot Evolution Manager - Sistema de evolução baseado em trades resolvidos
-Gatilhos: 200 trades globais | Safety net: 12h | Cooldown: 5h
+Gatilhos: 50 trades globais | Safety net: 24h | Cooldown: 24h
 """
 
 import json
@@ -40,9 +40,9 @@ class EvolutionMetrics:
 class BotEvolutionManager:
     """
     Gerencia evolução de bots baseada em:
-    - Gatilho principal: 200 trades resolvidos (global)
-    - Safety net: máximo 12 horas sem evolução (mesmo sem 200 trades)
-    - Cooldown mínimo: 5 horas entre evoluções (mesmo com 200+ trades)
+    - Gatilho principal: 50 trades resolvidos (global)
+    - Safety net: máximo 24 horas sem evolução (mesmo sem 50 trades)
+    - Cooldown mínimo: 24 horas entre evoluções
     """
     
     def __init__(self, bots_source=None):
@@ -171,8 +171,8 @@ class BotEvolutionManager:
     
     def _evaluate_evolution_trigger(self):
         """Avalia se deve iniciar evolução baseado nas regras:
-        - Evolui após 200 trades, mas nunca antes de 5h (cooldown)
-        - Safety net: após 12h sem evolução, evolui mesmo sem 200 trades
+        - Evolui após 50 trades, mas nunca antes de 24h (cooldown)
+        - Safety net: após 24h sem evolução, evolui mesmo sem 50 trades (se amostragem mínima atingida)
         """
         if self.evolution_in_progress:
             return
