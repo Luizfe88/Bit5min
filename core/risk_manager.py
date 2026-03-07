@@ -137,7 +137,8 @@ class ArenaRiskManager:
             return False, "amount_below_minimum"
 
         # 2.5 Tamanho máximo absoluto (Hard Cap 2%)
-        if amount > limits["max_trade_size"]:
+        # Adicionado um pequeno epsilon (0.01) para evitar rejeições por arredondamento de ponto flutuante
+        if amount > (limits["max_trade_size"] + 0.01):
             logger.warning(
                 f"[{bot_name}] 🚫 Trade estruturalmente rejeitado (Risco): Amount ${amount:.2f} excede o hard cap de 2% (${limits['max_trade_size']:.2f})"
             )
@@ -224,8 +225,8 @@ class ArenaRiskManager:
                 tp_price = fill_price * (1 + tp_pct)
 
             elif side.lower() == "no":
-                # 1. Encontra o custo real investido no lado NO
-                cost_no = 1.0 - fill_price
+                # 1. Encontra o custo real investido no lado NO (fill_price já é o token_price para NO)
+                cost_no = fill_price
 
                 # 2. Calcula o valor alvo do contrato NO baseado nas porcentagens
                 # Se bater no SL, o valor do contrato NO CAIU. Se bater no TP, SUBIU.
@@ -553,6 +554,7 @@ class ArenaRiskManager:
                     not pos.tp_triggered
                     and pos.tp_price is not None
                     and current_yes >= pos.tp_price
+                    and current_yes > pos.entry_price  # PROFIT GUARD: só engatilha se estiver no lucro
                 ):
                     # ── GATILHO TP -> TRAILING (YES) ──────────────────────────────
                     pos.tp_triggered = True
@@ -586,6 +588,7 @@ class ArenaRiskManager:
                     not pos.tp_triggered
                     and pos.tp_price is not None
                     and current_yes <= pos.tp_price
+                    and current_yes < (1.0 - pos.entry_price)  # PROFIT GUARD: só engatilha se estiver no lucro
                 ):
                     # ── GATILHO TP -> TRAILING (NO) ───────────────────────────────
                     pos.tp_triggered = True

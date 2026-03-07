@@ -599,7 +599,7 @@ class BaseBot(ABC):
             return {"success": False, "reason": "position_below_minimum"}
 
         # Enforce hard cap per trade of 2% of total capital (User requested strict limit)
-        max_position_cap = total_capital * getattr(config, "MAX_POSITION_PCT_OF_BALANCE", 0.02)
+        max_position_cap = round(total_capital * getattr(config, "MAX_POSITION_PCT_OF_BALANCE", 0.02), 2)
         if amount > max_position_cap:
             logger.info(
                 f"[{self.name}] Capping requested position size ${amount:.2f} to max ${max_position_cap:.2f} (2%)."
