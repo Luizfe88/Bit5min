@@ -637,6 +637,34 @@ def get_arena_state(key, default=None):
         return row["value"] if row else default
 
 
+def get_bot_pnl_since_last_evolution(bot_name, mode="paper"):
+    """
+    Returns the SUM of all PnL (realized) for a specific bot resolved
+    since the last evolution event.
+    """
+    last_evo = get_arena_state("last_evolution_time")
+    if not last_evo:
+        # Fallback to daily net pnl if no evolution recorded yet
+        return get_bot_daily_net_pnl(bot_name, mode)
+    
+    try:
+        ts = float(last_evo)
+        cutoff = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return get_bot_daily_net_pnl(bot_name, mode)
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(pnl), 0) as net_pnl
+            FROM trades
+            WHERE bot_name=? AND mode=? AND resolved_at>? AND outcome IS NOT NULL
+        """,
+            (bot_name, mode, cutoff),
+        ).fetchone()
+        return float(dict(row)["net_pnl"])
+
+
 def set_arena_state(key, value):
     with get_conn() as conn:
         conn.execute(

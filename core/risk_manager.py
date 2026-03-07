@@ -169,6 +169,26 @@ class ArenaRiskManager:
             )
             return False, "daily_loss_global"
 
+        # ── CHECK 3.5: KILL SWITCH (MAX BOT DRAWDOWN NO CICLO ATUAL) ────
+        # Monitora o PnL individual desde a última Geração (estratégia de transição para lucro)
+        max_drawdown = getattr(config, "MAX_BOT_DRAWDOWN", -300.00)
+        bot_cycle_pnl = db.get_bot_pnl_since_last_evolution(bot_name, self.mode)
+        
+        if bot_cycle_pnl <= max_drawdown:
+            logger.critical(
+                f"💀 [KILL SWITCH] {bot_name} atingiu drawdown máximo do ciclo: "
+                f"${bot_cycle_pnl:.2f} <= ${max_drawdown:.2f}. STATUS: BLOCKED."
+            )
+            if self.telegram:
+                self.telegram.send_message(
+                    f"💀 <b>KILL SWITCH ATIVADO</b> 💀\n"
+                    f"Bot: <b>{bot_name}</b>\n"
+                    f"PnL do Ciclo: <b>${bot_cycle_pnl:.2f}</b>\n"
+                    f"Limite de Corte: <b>${max_drawdown:.2f}</b>\n"
+                    f"Bot bloqueado até a próxima Geração."
+                )
+            return False, "bot_kill_switch_activated"
+
         # ── CHECK 4: PnL DIÁRIO POR BOT (Net PnL Realizado) ──────────────────
         daily_bot_pnl = db.get_bot_daily_net_pnl(bot_name, self.mode)
         if daily_bot_pnl <= -limits["max_daily_loss_per_bot"]:

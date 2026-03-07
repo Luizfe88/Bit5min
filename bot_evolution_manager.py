@@ -49,9 +49,9 @@ class BotEvolutionManager:
         self.global_trade_count = 0
         self.last_evolution_time = None  # Será definido pelo _load_state
         self.evolution_in_progress = False
-        self.cooldown_hours = 5
-        self.max_time_without_evolution = 12 * 60 * 60  # 12 horas em segundos
-        self.target_trades = 200
+        self.cooldown_hours = config.EVOLUTION_MIN_HOURS_COOLDOWN
+        self.max_time_without_evolution = config.EVOLUTION_INTERVAL_HOURS * 3600
+        self.target_trades = config.EVOLUTION_MIN_TRADES
         self.lock = threading.Lock()
         self._bots_source = bots_source  # Função para obter bots ativos
         self._last_status_log = None    # Controla log de status a cada 15 min
@@ -152,7 +152,13 @@ class BotEvolutionManager:
                 if self.global_trade_count >= self.target_trades:
                     trigger_reason = EvolutionTrigger.TRADE_THRESHOLD
                 elif time_since_last.total_seconds() >= self.max_time_without_evolution:
-                    trigger_reason = EvolutionTrigger.SAFETY_NET
+                    # SAFETY NET: Só engatilha se houver amostragem mínima (50 trades)
+                    min_sample = getattr(config, "MIN_SAMPLE_SIZE_EVOLUTION", 50)
+                    if self.global_trade_count >= min_sample:
+                        trigger_reason = EvolutionTrigger.SAFETY_NET
+                    else:
+                        # Não define trigger_reason, a evolução será adiada
+                        pass
         
         return EvolutionMetrics(
             global_trade_count=self.global_trade_count,
@@ -203,10 +209,17 @@ class BotEvolutionManager:
         else:
             time_until_safety = timedelta(seconds=self.max_time_without_evolution) - metrics.time_since_last_evolution
             safety_str = str(time_until_safety).split('.')[0]
+            
+            min_sample = getattr(config, "MIN_SAMPLE_SIZE_EVOLUTION", 50)
+            sample_status = f" | Amostragem: {metrics.global_trade_count}/{min_sample}" if metrics.time_since_last_evolution.total_seconds() >= self.max_time_without_evolution else ""
+            
             logger.info(
                 f"⏳ Aguardando trades. {metrics.global_trade_count}/{self.target_trades} "
-                f"(faltam {trades_remaining}) | Safety net em: {safety_str}"
+                f"(faltam {trades_remaining}) | Safety net em: {safety_str}{sample_status}"
             )
+            
+            if metrics.time_since_last_evolution.total_seconds() >= self.max_time_without_evolution and metrics.global_trade_count < min_sample:
+                logger.warning(f"⚠️  EVOLUÇÃO ADIADA: Tempo esgotado ({self.max_time_without_evolution/3600}h) mas amostragem insuficiente ({metrics.global_trade_count}/{min_sample} trades).")
     
     def _trigger_evolution(self, trigger_reason: EvolutionTrigger):
         """Inicia processo de evolução"""

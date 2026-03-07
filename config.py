@@ -177,6 +177,8 @@ MAX_POSITION_PCT_OF_BALANCE = 0.02  # Never bet more than 2% of balance per trad
 MAX_TOTAL_POSITION_PCT_OF_BALANCE = (
     0.50  # Never allocate more than 50% of total balance
 )
+MAX_BOT_DRAWDOWN = -300.00  # Kill switch: max PnL drawdown per bot in generation cycle
+
 
 # ===== DYNAMIC CONFIDENCE-BASED POSITION SIZING (NEW) =====
 # Controls how position size scales with confidence level
@@ -208,13 +210,15 @@ MIN_TRADE_AMOUNT = _env_float(
 )  # Minimum trade amount
 
 # Evolution Settings
-EVOLUTION_INTERVAL_HOURS = 12  # Safety net: máximo 12h sem evolução
-EVOLUTION_MAX_HOURS = 12  # Máximo de horas para evolução
-EVOLUTION_MIN_HOURS_COOLDOWN = 5  # Tempo mínimo entre evoluções
-EVOLUTION_MIN_TRADES = 200  # Mínimo de trades para evolução
+EVOLUTION_INTERVAL_HOURS = 24  # Trigger evolution every 24h if sample size met
+EVOLUTION_MAX_HOURS = 24  # Max time without evolution
+EVOLUTION_MIN_HOURS_COOLDOWN = 5  # Min time between evolutions
+EVOLUTION_MIN_TRADES = 200  # Target trades for threshold trigger
+MIN_SAMPLE_SIZE_EVOLUTION = 50  # Minimum resolved trades needed for time-based trigger
 EVOLUTION_MIN_RESOLVED_TRADES = (
-    200  # Mínimo de trades resolvidos para evolução (padrão recomendado)
+    200  # Target resolved trades for threshold trigger
 )
+
 MUTATION_RATE = 0.10
 NUM_BOTS = 5
 SURVIVORS_PER_CYCLE = 2
