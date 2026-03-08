@@ -484,6 +484,36 @@ class BaseBot(ABC):
                 f"[{self.name}] Signal ignored. Confiança muito baixa ({conf:.2f}) < min_conf={min_conf:.2f} (INVIOLÁVEL)"
             )
             return {"success": False, "reason": "low_confidence"}
+
+        # --- INSTITUTIONAL MICROSTRUCTURE FILTERS (NEW) ---
+        # 1. Liquidity/Volume Filter (Protection against Gaps)
+        try:
+            m_liquidity = float(market.get("liquidity") or market.get("volume") or 0.0)
+            vol_threshold = config.get_institutional_volume_threshold()
+            if m_liquidity < vol_threshold:
+                logger.info(
+                    f"[{self.name}] [SKIP] Mercado rejeitado por baixa liquidez (Volume < ${vol_threshold/1000:.0f}k)."
+                )
+                return {"success": False, "reason": "low_liquidity_institutional"}
+        except Exception as liq_err:
+            logger.debug(f"[{self.name}] Liquidity check error (non-blocking): {liq_err}")
+
+        # 2. Spread Filter (Protection against Retail Spikes)
+        try:
+            bb = float(market.get("best_bid") or 0)
+            ba = float(market.get("best_ask") or 0)
+            if bb > 0 and ba > 0:
+                mid = (bb + ba) / 2
+                spread_pct = (ba - bb) / mid
+                max_spread_inst = config.get_max_spread_pct_microstructure() / 100.0
+                if spread_pct > max_spread_inst:
+                    logger.info(
+                        f"[{self.name}] [SKIP] Spread muito alto detectado ({spread_pct*100:.2f}% > {max_spread_inst*100:.0f}%). Proteção de microestrutura ativada."
+                    )
+                    return {"success": False, "reason": "high_spread_microstructure"}
+        except Exception as spread_err:
+            logger.debug(f"[{self.name}] Spread check error (non-blocking): {spread_err}")
+        # --- END INSTITUTIONAL FILTERS ---
         venue = config.get_venue()
         max_pos = config.get_max_position()
 

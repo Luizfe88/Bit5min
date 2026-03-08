@@ -56,11 +56,11 @@ def setup_logging_with_brt(name, level=logging.INFO, log_file=None):
     
     # File handler if specified
     if log_file:
-        # Use TimedRotatingFileHandler for rotation every 1 hour
+        # Use TimedRotatingFileHandler for rotation every 3 hours
         file_handler = TimedRotatingFileHandler(
             log_file,
             when='H',           # Rotate by hours
-            interval=1,         # Every 1 hour
+            interval=3,         # Every 3 hours
             backupCount=168,    # Keep 1 week (24 * 7 hours)
             encoding='utf-8',
             delay=False,

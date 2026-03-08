@@ -270,6 +270,8 @@ MARKET_FILTER = {
     "max_spread_percent": _env_float(
         "BOT_ARENA_MAX_SPREAD_PERCENT", 6.0
     ),  # v3: 6.0% (Rejeita > 6%)
+    "institutional_volume_threshold": _env_float("BOT_ARENA_INSTITUTIONAL_VOLUME_THRESHOLD", 100000.0),
+    "max_spread_pct_microstructure": _env_float("BOT_ARENA_MAX_SPREAD_PCT_MICROSTRUCTURE", 4.0), # 4% as requested
 }
 
 # Legacy variables kept for compatibility but redirected to new filter logic where possible
@@ -450,6 +452,16 @@ def get_max_spread_allowed() -> float:
     return AGGRESSION_THRESHOLDS.get(
         get_aggression_level(), AGGRESSION_THRESHOLDS["medium"]
     )["max_spread_allowed"]
+
+
+def get_institutional_volume_threshold() -> float:
+    """Return institutional volume threshold (e.g. 100000.0)."""
+    return MARKET_FILTER.get("institutional_volume_threshold", 100000.0)
+
+
+def get_max_spread_pct_microstructure() -> float:
+    """Return max spread percent allowed by microstructure filter (e.g. 4.0)."""
+    return MARKET_FILTER.get("max_spread_pct_microstructure", 4.0)
 
 
 def get_max_trades_per_hour_per_bot() -> int:
