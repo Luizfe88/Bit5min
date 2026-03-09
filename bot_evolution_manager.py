@@ -75,8 +75,8 @@ class BotEvolutionManager:
             # Conta trades resolvidos APÓS a última evolução
             with db.get_conn() as conn:
                 cursor = conn.cursor()
-                # Timestamp da última evolução para filtro (em UTC para a query)
-                last_evo_ts = datetime.utcfromtimestamp(self.last_evolution_time.timestamp()).strftime('%Y-%m-%d %H:%M:%S')
+                # Timestamp da última evolução para filtro (em BRT para a query)
+                last_evo_ts = self.last_evolution_time.strftime('%Y-%m-%d %H:%M:%S')
                 
                 # Query: Trades resolvidos com resolved_at > last_evolution_time
                 cursor.execute("""
@@ -293,8 +293,19 @@ class BotEvolutionManager:
                 win_rate = perf.get("win_rate", 0)
                 
                 # Calcula score ponderado
-                sample_weight = min(1.0, trades / 20)  # Peso baseado em trades
-                score = (pnl * sample_weight) + ((win_rate - 0.5) * 2.0 * sample_weight)
+                # --- MÓDULO 5: Evolução Genética via Brier Score ---
+                brier_score = db.get_bot_brier_score(bot.name, hours=self.cooldown_hours * 2)
+                
+                # Calcula score ponderado
+                sample_weight = min(1.0, trades / 20)  # Peso baseado em trades amostragem
+                
+                # Fitness: PnL + WinRate + Brier Calibration
+                # Brier Score varia de 0 (perfeito) a 1 (péssimo). 0.25 é o chute de 50/50.
+                # Queremos maximizar o score, então subtraímos o Brier Score.
+                # BS_Factor: (0.25 - brier_score) * 4.0 -> Se BS=0, factor=1.0. Se BS=0.25, factor=0. Se BS=0.5, factor=-1.
+                calibration_score = (0.25 - brier_score) * 100.0 # Multiplicador de 100 para equiparar ao peso do PnL
+                
+                score = (pnl * sample_weight) + ((win_rate - 0.5) * 20.0 * sample_weight) + (calibration_score * sample_weight)
                 
                 rankings.append({
                     "bot": bot,
@@ -303,7 +314,7 @@ class BotEvolutionManager:
                     "generation": bot.generation,
                     "pnl": pnl,
                     "win_rate": win_rate,
-                    "trades": trades,
+                    "brier_score": brier_score,
                     "score": score,
                 })
                 
@@ -334,7 +345,7 @@ class BotEvolutionManager:
             status = "SOBREVIVE" if i < survivors_count else "REPLACED"
             logger.info(f"  #{i+1} {rank['name']}: score={rank['score']:+.2f} "
                        f"P&L=${rank['pnl']:.2f}, WR={rank['win_rate']:.1%}, "
-                       f"Trades={rank['trades']} [{status}]")
+                       f"Brier={rank.get('brier_score', 0):.4f} [{status}]")
         
         return survivors
     

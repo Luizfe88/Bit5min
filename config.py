@@ -209,6 +209,14 @@ MIN_TRADE_AMOUNT = _env_float(
     "BOT_ARENA_MIN_TRADE_AMOUNT", 0.01
 )  # Minimum trade amount
 
+# --- PHASE 2: Quantitative Institutional Architecture ---
+MIN_Z_SCORE = 2.0
+FRACTIONAL_KELLY = 0.25  # Quarter Kelly sizing
+MAX_MDD_PCT = 0.08       # 8% Lockdown
+TRAILING_ACTIVATION_PCT = 0.03  # Activate trailing after 3% profit
+MAKER_ORDER_PRIORITY = True
+# ---------------------------------------------------------
+
 # Evolution Settings
 EVOLUTION_INTERVAL_HOURS = 24  # Trigger evolution every 24h if sample size met
 EVOLUTION_MAX_HOURS = 24  # Max time without evolution

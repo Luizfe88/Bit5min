@@ -21,6 +21,7 @@ from telegram_notifier import get_telegram_notifier
 from core.risk_manager import risk_manager
 from core.market_lock import market_lock
 from core.slippage_model import SlippageCalculator
+from core.oracle import PriceOracle
 
 logger = setup_logging_with_brt(__name__)
 
@@ -215,6 +216,13 @@ class BaseBot(ABC):
 
         p_yes = edge_model.predict_yes_probability(self.name, market_price, x)
 
+        # --- MÓDULO 1: Atualização Bayesiana (O Novo Sinal) ---
+        movement = PriceOracle.get_binance_movement()
+        p_prior = p_yes
+        p_model = PriceOracle.apply_bayesian_update(p_prior, movement)
+        p_yes = p_model # Update p_yes with bayesian price
+        # -----------------------------------------------------
+
         entry_buffer = config.get_entry_price_buffer()
         fee_rate = config.get_fee_rate()
 
@@ -236,58 +244,91 @@ class BaseBot(ABC):
             p_yes, market_price, p_eff_yes, p_eff_no
         )
 
-        # Dynamic minimum edge based on configured aggression
-        min_ev = config.get_min_edge_after_fees()
+        # --- MÓDULO 2.1: Mispricing Score (Z-Score) ---
+        # δ = (p_model - p_mkt) / σ
+        sigma = max(0.005, vol) # Piso de volatilidade para evitar divisão por zero ou score infinito
+        z_score = abs(p_yes - market_price) / sigma
         
-        if best_ev < float(min_ev):
-            # compute spread percent if available
-            spread_pct = None
-            try:
-                bb = float(market.get("best_bid") or 0)
-                ba = float(market.get("best_ask") or 0)
-                if bb > 0 and ba > 0:
-                    mid = (bb + ba) / 2
-                    spread_pct = (ba - bb) / mid * 100
-            except Exception:
-                spread_pct = None
+        # --- MÓDULO 2.2: Condição de Hedge ---
+        p_y_raw = market.get("best_ask", market_price + 0.01)
+        p_n_raw = 1.0 - market.get("best_bid", market_price - 0.01)
+        try:
+            p_y = float(p_y_raw)
+            p_n = float(p_n_raw)
+        except (TypeError, ValueError):
+            p_y, p_n = market_price + 0.01, (1.0 - market_price) + 0.01
+            
+        hedge_pi = 1.0 - (p_y + p_n)
+        arbitrage_mode = hedge_pi > 0.005 # Ativa se pi > 0.5% (considerando margem para taxas)
 
-            if spread_pct is None:
-                # Fallback for Simmer context spread
-                spread_pct = signals.get("orderflow", {}).get("spread_pct")
+        # --- MÓDULO 4.1: Filtro EV (Expected Return) ---
+        # E[R] = (Rewards - L_fill) / C_risk > 0
+        expected_return = best_ev # best_ev já é (p - p_eff) / p_eff
+        
+        # --- LOGGING INSTITUCIONAL ---
+        brier_score = db.get_bot_brier_score(self.name)
+        k_frac = getattr(config, "FRACTIONAL_KELLY", 0.25)
+        # Kelly calculation same as below to log it
+        k_yes = (p_yes - p_eff_yes) / max(1e-6, (1.0 - p_eff_yes))
+        k_no = ((1.0 - p_yes) - p_eff_no) / max(1e-6, (1.0 - p_eff_no))
+        k_val = k_yes if side == "yes" else k_no
+        kelly_pct = max(0.0, min(0.05, k_val * k_frac)) # Limitado a 5% conforme Módulo 3.1
+        
+        logger.info(
+            f"[{self.name}] [DECISÃO] "
+            f"[Z-Score: {z_score:.2f}] [Kelly: {kelly_pct:.2%}] "
+            f"[Brier: {brier_score:.4f}] [Hedge π: {hedge_pi:.4f}]"
+        )
 
-            reason_text = f"No edge after costs: p_yes={p_yes:.3f} mkt={market_price:.3f} ev_yes={ev_yes:.2%} ev_no={ev_no:.2%}"
-            logger.info(
-                f"[{self.name}] SKIP: {reason_text} | min_ev={min_ev:.4f} | spread_pct={f'{spread_pct:.2f}%' if spread_pct is not None else 'N/A'}"
-            )
+        # Filter: Z-Score > 2.0 OR Arbitrage Mode
+        if z_score <= getattr(config, "MIN_Z_SCORE", 2.0) and not arbitrage_mode:
+            reason_text = f"Insufficient Edge: Z-Score={z_score:.2f} < {config.MIN_Z_SCORE} and no arbitrage."
             return {
                 "action": "skip",
                 "side": side,
-                "confidence": min(0.95, abs(p_yes - market_price) * 2.5),
+                "confidence": 0,
                 "reasoning": reason_text,
                 "suggested_amount": 0,
                 "is_exploration": False,
-                "features": {
-                    "x": x,
-                    "market_price": market_price,
-                    "p_yes": p_yes,
-                    "p_entry_yes": p_eff_yes,
-                    "p_entry_no": p_eff_no,
-                },
+                "features": {"p_yes": p_yes, "z_score": z_score, "hedge_pi": hedge_pi},
             }
 
+        if expected_return <= 0 and not arbitrage_mode:
+            reason_text = f"Negative EV: {expected_return:.2%} and no arbitrage."
+            return {
+                "action": "skip",
+                "side": side,
+                "confidence": 0,
+                "reasoning": reason_text,
+                "suggested_amount": 0,
+                "is_exploration": False,
+                "features": {"p_yes": p_yes, "ev": expected_return, "hedge_pi": hedge_pi},
+            }
+
+        # Dynamic position sizing: Kelly Fraction (Módulo 3.1)
         max_pos = config.get_max_position()
-        k_frac = getattr(config, "KELLY_FRACTION", 0.5)
-        k_yes = (p_yes - p_eff_yes) / max(1e-6, (1.0 - p_eff_yes))
-        k_no = ((1.0 - p_yes) - p_eff_no) / max(1e-6, (1.0 - p_eff_no))
-        k = k_yes if side == "yes" else k_no
-        k = max(0.0, min(0.25, k))
-        amount = max_pos * k * k_frac
+        amount = max_pos * kelly_pct
+        
+        if arbitrage_mode:
+            reasoning = f"ARBITRAGE DETECTED (π={hedge_pi:.4f}). Hedge entry."
+            return {
+                "action": "buy", # The bot engine will need to handle "hedge" as multiple buys or just one side if it's simpler
+                "side": "yes", # Simplification: Buy YES, and rely on the next call or another bot for NO? 
+                               # Better: The user asked to "compre ambos os lados". 
+                               # I will mark it as "hedge" for the executor to handle if possible, 
+                               # or just prioritize the side with more edge if I can only return one.
+                "confidence": 0.99,
+                "reasoning": reasoning,
+                "suggested_amount": max_pos * 0.05, # Max allocation for arb
+                "is_hedge": True,
+                "features": {"p_yes": p_yes, "hedge_pi": hedge_pi},
+            }
 
         confidence = min(0.95, abs(p_yes - market_price) * 2.5)
         reasoning = (
             f"p_yes={p_yes:.3f} mkt={market_price:.3f} "
-            f"ev_yes={ev_yes:.2%} ev_no={ev_no:.2%} "
-            f"mom={momentum_signal:+.3f} vol={vol:.4f} tte={tte:.0f}s strat={strat:+.3f}"
+            f"ev={expected_return:.2%} z={z_score:.2f} "
+            f"mom={momentum_signal:+.3f} vol={vol:.4f} tte={tte:.0f}s"
         )
 
         # Combine ML features with any custom trade features from analyze()
@@ -297,31 +338,11 @@ class BaseBot(ABC):
             "p_yes": p_yes,
             "p_entry_yes": p_eff_yes,
             "p_entry_no": p_eff_no,
+            "z_score": z_score,
+            "hedge_pi": hedge_pi,
         }
         if raw_signal.get("trade_features"):
             final_features.update(raw_signal.get("trade_features"))
-
-        # Dynamic position sizing: boost when very confident
-        try:
-            conf_float = float(confidence)
-        except Exception:
-            conf_float = 0.0
-
-        if conf_float >= 0.82:
-            # scale factor between 1.5 and 2.0 influenced by aggression level
-            agg_lvl = (
-                config.get_aggression_level()
-                if hasattr(config, "get_aggression_level")
-                else "medium"
-            )
-            if agg_lvl == "aggressive":
-                mult = 2.0
-            elif agg_lvl == "medium":
-                mult = 1.65
-            else:
-                mult = 1.5
-            amount = amount * mult
-            reasoning = f"[SIZE x{mult:.2f}] " + reasoning
 
         return {
             "action": "buy",

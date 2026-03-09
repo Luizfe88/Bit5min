@@ -1223,7 +1223,7 @@ def main_loop(bots, api_key):
     skip_retry = getattr(config, "SKIP_RETRY_SECONDS", 45) or 45
     with db.get_conn() as conn:
         recent = conn.execute(
-            "SELECT bot_name, market_id FROM trades WHERE created_at >= datetime('now', '-4 hours')"
+            "SELECT bot_name, market_id FROM trades WHERE created_at >= datetime('now', '-3 hours', '-4 hours')"
         ).fetchall()
         for r in recent:
             executed.add((r["bot_name"], r["market_id"]))

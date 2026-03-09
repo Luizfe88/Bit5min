@@ -36,7 +36,7 @@ def init_db():
                 current_sl REAL,
                 current_tp REAL,
                 tp_triggered INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
 
             CREATE TABLE IF NOT EXISTS bot_configs (
@@ -47,7 +47,7 @@ def init_db():
                 lineage TEXT,
                 params TEXT NOT NULL,
                 active INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now')),
+                created_at TEXT DEFAULT (datetime('now', '-3 hours')),
                 retired_at TEXT
             );
 
@@ -58,7 +58,7 @@ def init_db():
                 replaced TEXT NOT NULL,
                 new_bots TEXT NOT NULL,
                 rankings TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
 
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -79,7 +79,7 @@ def init_db():
                 feature_key TEXT NOT NULL,
                 wins INTEGER DEFAULT 0,
                 losses INTEGER DEFAULT 0,
-                updated_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now', '-3 hours')),
                 UNIQUE(bot_name, feature_key)
             );
 
@@ -87,19 +87,19 @@ def init_db():
                 bot_name TEXT PRIMARY KEY,
                 bias REAL NOT NULL,
                 weights TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
+                updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
 
             CREATE TABLE IF NOT EXISTS arena_state (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
-                updated_at TEXT DEFAULT (datetime('now'))
+                updated_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
 
             CREATE TABLE IF NOT EXISTS copytrading_wallets (
                 address TEXT PRIMARY KEY,
                 label TEXT,
-                tracked_since TEXT DEFAULT (datetime('now')),
+                tracked_since TEXT DEFAULT (datetime('now', '-3 hours')),
                 total_trades INTEGER DEFAULT 0,
                 win_rate REAL,
                 total_pnl REAL DEFAULT 0,
@@ -119,7 +119,7 @@ def init_db():
                 our_trade_id TEXT,
                 outcome TEXT,
                 pnl REAL,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
             
             CREATE TABLE IF NOT EXISTS generation_snapshots (
@@ -131,7 +131,7 @@ def init_db():
                 total_pnl REAL,
                 trades INTEGER,
                 params TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '-3 hours'))
             );
         """)
 
@@ -168,8 +168,8 @@ def log_trade(
         cursor = conn.execute(
             """INSERT INTO trades (bot_name, market_id, market_question, side, amount,
                confidence, reasoning, trade_features, venue, mode, trade_id, shares_bought,
-               sl_price, tp_price, current_sl, current_tp, owner_tag)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               sl_price, tp_price, current_sl, current_tp, owner_tag, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))""",
             (
                 bot_name,
                 market_id,
@@ -239,7 +239,7 @@ def resolve_trade(internal_id, outcome, pnl):
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.execute(
-            "UPDATE trades SET outcome=?, pnl=?, resolved_at=datetime('now') WHERE id=?",
+            "UPDATE trades SET outcome=?, pnl=?, resolved_at=datetime('now', '-3 hours') WHERE id=?",
             (outcome, pnl, internal_id),
         )
         # Verificar se a atualização realmente bateu alguma linha
@@ -268,7 +268,7 @@ def resolve_trade(internal_id, outcome, pnl):
 def get_bot_trades(bot_name, hours=None, limit=50):
     with get_conn() as conn:
         if hours:
-            cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+            cutoff = (datetime.now() - timedelta(hours=hours)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             rows = conn.execute(
@@ -285,7 +285,7 @@ def get_bot_trades(bot_name, hours=None, limit=50):
 
 def get_bot_performance(bot_name, hours=12):
     with get_conn() as conn:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+        cutoff = (datetime.now() - timedelta(hours=hours)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         row = conn.execute(
@@ -309,9 +309,69 @@ def get_bot_performance(bot_name, hours=12):
         return result
 
 
+def get_bot_brier_score(bot_name, hours=48):
+    """
+    Calculates the Brier Score for a bot: BS = (1/n) * sum((p_i - o_i)^2)
+    p_i: Predicted probability of YES
+    o_i: 1 if resolved as YES, 0 if NO
+    """
+    with get_conn() as conn:
+        cutoff = (datetime.now() - timedelta(hours=hours)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        rows = conn.execute(
+            """
+            SELECT side, outcome, trade_features
+            FROM trades
+            WHERE bot_name=? AND created_at>=? AND outcome IN ('win', 'loss', 'exit_tp', 'exit_sl')
+        """,
+            (bot_name, cutoff),
+        ).fetchall()
+
+        if not rows:
+            return 0.25  # Neutral starting point (uncertainty)
+
+        total_sq_error = 0.0
+        count = 0
+
+        for r in rows:
+            try:
+                features = json.loads(r["trade_features"]) if r["trade_features"] else {}
+                p_yes = features.get("p_yes")
+                if p_yes is None:
+                    continue
+
+                side = r["side"].lower()
+                outcome = r["outcome"].lower()
+
+                # Determine if the actual outcome was YES (1) or NO (0)
+                # win on YES -> resolution was YES
+                # loss on YES -> resolution was NO
+                # win on NO -> resolution was NO
+                # loss on NO -> resolution was YES
+                actual_yes = None
+                if side == "yes":
+                    if outcome in ("win", "exit_tp"):
+                        actual_yes = 1.0
+                    else:
+                        actual_yes = 0.0
+                else: # side == "no"
+                    if outcome in ("win", "exit_tp"):
+                        actual_yes = 0.0
+                    else:
+                        actual_yes = 1.0
+
+                total_sq_error += (p_yes - actual_yes) ** 2
+                count += 1
+            except Exception:
+                continue
+
+        return total_sq_error / count if count > 0 else 0.25
+
+
 def get_all_bots_performance(hours=12):
     with get_conn() as conn:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime(
+        cutoff = (datetime.now() - timedelta(hours=hours)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         rows = conn.execute(
@@ -345,8 +405,8 @@ def save_generation_snapshot(
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO generation_snapshots 
-               (generation, bot_name, strategy_type, win_rate, total_pnl, trades, params)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (generation, bot_name, strategy_type, win_rate, total_pnl, trades, params, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))""",
             (
                 int(generation),
                 bot_name,
@@ -362,8 +422,8 @@ def save_generation_snapshot(
 def save_bot_config(bot_name, strategy_type, generation, params, lineage=None):
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO bot_configs (bot_name, strategy_type, generation, lineage, params)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO bot_configs (bot_name, strategy_type, generation, lineage, params, created_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now', '-3 hours'))""",
             (bot_name, strategy_type, generation, lineage, json.dumps(params)),
         )
 
@@ -371,7 +431,7 @@ def save_bot_config(bot_name, strategy_type, generation, params, lineage=None):
 def retire_bot(bot_name):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE bot_configs SET active=0, retired_at=datetime('now') WHERE bot_name=? AND active=1",
+            "UPDATE bot_configs SET active=0, retired_at=datetime('now', '-3 hours') WHERE bot_name=? AND active=1",
             (bot_name,),
         )
 
@@ -387,8 +447,8 @@ def get_active_bots():
 def log_evolution(cycle_number, survivors, replaced, new_bots, rankings):
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO evolution_events (cycle_number, survivors, replaced, new_bots, rankings)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO evolution_events (cycle_number, survivors, replaced, new_bots, rankings, created_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now', '-3 hours'))""",
             (
                 cycle_number,
                 json.dumps(survivors),
@@ -410,8 +470,8 @@ def get_evolution_history(limit=20):
 def get_total_daily_loss(mode="paper"):
     with get_conn() as conn:
         # Compute cutoff: start of today OR manual reset time, whichever is later
-        now_utc = datetime.utcnow()
-        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        now_brt = datetime.now()
+        today_start = datetime(now_brt.year, now_brt.month, now_brt.day, 0, 0, 0)
         reset_key = f"daily_loss_reset_at:{mode}"
         reset_at = get_arena_state(reset_key)
         cutoff = today_start
@@ -440,8 +500,8 @@ def get_daily_net_pnl(mode="paper"):
     Positive = profit, Negative = net loss.
     """
     with get_conn() as conn:
-        now_utc = datetime.utcnow()
-        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        now_brt = datetime.now()
+        today_start = datetime(now_brt.year, now_brt.month, now_brt.day, 0, 0, 0)
         reset_key = f"daily_loss_reset_at:{mode}"
         reset_at = get_arena_state(reset_key)
         cutoff = today_start
@@ -467,8 +527,8 @@ def get_daily_net_pnl(mode="paper"):
 def get_bot_daily_loss(bot_name, mode="paper"):
     with get_conn() as conn:
         # Compute cutoff: start of today OR manual reset time, whichever is later
-        now_utc = datetime.utcnow()
-        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        now_brt = datetime.now()
+        today_start = datetime(now_brt.year, now_brt.month, now_brt.day, 0, 0, 0)
         reset_key = f"daily_loss_reset_at:{mode}"
         reset_at = get_arena_state(reset_key)
         cutoff = today_start
@@ -496,8 +556,8 @@ def get_bot_daily_net_pnl(bot_name, mode="paper"):
     Returns the SUM of all PnL (realized) for a specific bot resolved today.
     """
     with get_conn() as conn:
-        now_utc = datetime.utcnow()
-        today_start = datetime(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+        now_brt = datetime.now()
+        today_start = datetime(now_brt.year, now_brt.month, now_brt.day, 0, 0, 0)
         reset_key = f"daily_loss_reset_at:{mode}"
         reset_at = get_arena_state(reset_key)
         cutoff = today_start
@@ -531,10 +591,10 @@ def get_active_bot_names():
 def reset_arena_day(mode="paper"):
     """
     Manually reset daily limits for the given mode:
-    - Sets daily_loss_reset_at:<mode> to now (UTC), so daily loss counters restart
+    - Sets daily_loss_reset_at:<mode> to now (BRT), so daily loss counters restart
     - Unpauses all active bots for this mode
     """
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     set_arena_state(f"daily_loss_reset_at:{mode}", now_str)
     try:
         bot_names = get_active_bot_names()
@@ -546,8 +606,8 @@ def reset_arena_day(mode="paper"):
 
 def get_dashboard_stats():
     with get_conn() as conn:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        today = datetime.now().strftime("%Y-%m-%d")
+        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
 
         # Exclude phantom trades (pnl=0 resolved from voting era)
         today_stats = conn.execute(
@@ -600,7 +660,7 @@ def get_bot_consecutive_losses(bot_name, mode="paper"):
         if last_evo:
             try:
                 ts = float(last_evo)
-                cutoff = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                cutoff = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
                 where_extra = " AND created_at >= ? "
                 params.append(cutoff)
             except Exception:
@@ -649,7 +709,7 @@ def get_bot_pnl_since_last_evolution(bot_name, mode="paper"):
     
     try:
         ts = float(last_evo)
-        cutoff = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return get_bot_daily_net_pnl(bot_name, mode)
 
@@ -668,8 +728,8 @@ def get_bot_pnl_since_last_evolution(bot_name, mode="paper"):
 def set_arena_state(key, value):
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO arena_state (key, value) VALUES (?, ?)
-               ON CONFLICT(key) DO UPDATE SET value=?, updated_at=datetime('now')""",
+            """INSERT INTO arena_state (key, value, updated_at) VALUES (?, ?, datetime('now', '-3 hours'))
+               ON CONFLICT(key) DO UPDATE SET value=?, updated_at=datetime('now', '-3 hours')""",
             (key, str(value), str(value)),
         )
 
@@ -775,8 +835,8 @@ def save_evolution_state(state_dict):
     """Salva estado do sistema de evolução"""
     with get_conn() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO arena_state (key, value) VALUES (?, ?)""",
-            ("evolution_state", json.dumps(state_dict)),
+            """INSERT OR REPLACE INTO arena_state (key, value, updated_at) VALUES (?, ?, datetime('now', '-3 hours'))""",
+            ("evolution_state", json.dumps(state_dict), str(json.dumps(state_dict))),
         )
 
 
@@ -791,7 +851,7 @@ def record_resolved_trade(bot_name, trade_result):
                 trade_result.get("market_id"),
                 trade_result.get("outcome"),
                 trade_result.get("pnl"),
-                datetime.now().isoformat(),
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             ),
         )
 

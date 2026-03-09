@@ -48,11 +48,33 @@ class ArenaRiskManager:
         if self.bankroll is not None and abs(self.bankroll - bankroll) < 0.01:
             return
         self.bankroll = float(bankroll)
+        
+        # --- MÓDULO 3.2: Max Drawdown (MDD) Kill Switch ---
+        peak = self._get_peak_bankroll()
+        if bankroll > peak:
+            self._update_peak_bankroll(bankroll)
+            peak = bankroll
+        
+        mdd = (peak - bankroll) / peak if peak > 0 else 0
+        max_mdd_allowed = getattr(config, "MAX_MDD_PCT", 0.08)
+        
+        if mdd >= max_mdd_allowed:
+            logger.critical(f"🛑 [MDD KILL SWITCH] Drawdown de {mdd:.2%} atingiu o limite de {max_mdd_allowed:.2%}. LOCKDOWN ATIVADO.")
+            if not self.notified_global_stop:
+                self._handle_global_stop(peak - bankroll, peak * max_mdd_allowed)
+        
         self.limits = self._calculate_dynamic_limits(bankroll)
         self.last_update = time.time()
         logger.info(
-            f"RiskManager atualizado | Banca=${bankroll:.2f} | Perfil={self.limits['profile']}"
+            f"RiskManager atualizado | Banca=${bankroll:.2f} | Peak=${peak:.2f} | MDD={mdd:.2%} | Perfil={self.limits['profile']}"
         )
+
+    def _update_peak_bankroll(self, peak: float):
+        try:
+            with open("arena_peak.json", "w") as f:
+                json.dump({"peak": peak}, f)
+        except Exception as e:
+            logger.error(f"Erro ao salvar peak bankroll: {e}")
 
     def _calculate_dynamic_limits(self, bankroll: float):
         # Limites baseados no capital total da arena
@@ -136,13 +158,19 @@ class ArenaRiskManager:
         if amount < config.get_min_trade_amount():
             return False, "amount_below_minimum"
 
-        # 2.5 Tamanho máximo absoluto (Hard Cap 2%)
-        # Adicionado um pequeno epsilon (0.01) para evitar rejeições por arredondamento de ponto flutuante
-        if amount > (limits["max_trade_size"] + 0.01):
+        # 2.5 Tamanho máximo absoluto (Hard Cap 2% Legacy / 5% Phase 2 Kelly)
+        max_allowed_trade = max(limits["max_trade_size"], self.bankroll * 0.05 if self.bankroll else 0)
+        if amount > (max_allowed_trade + 0.01):
             logger.warning(
-                f"[{bot_name}] 🚫 Trade estruturalmente rejeitado (Risco): Amount ${amount:.2f} excede o hard cap de 2% (${limits['max_trade_size']:.2f})"
+                f"[{bot_name}] 🚫 Trade rejeitado: Amount ${amount:.2f} excede o limite institucional de 5% (${max_allowed_trade:.2f})"
             )
             return False, "amount_exceeds_maximum"
+
+        # 2.6 Check MDD Lockdown
+        peak = self._get_peak_bankroll()
+        mdd = (peak - self.bankroll) / peak if peak > 0 else 0
+        if mdd >= getattr(config, "MAX_MDD_PCT", 0.08):
+            return False, "mdd_lockdown_active"
 
         # ── CHECK 3: PnL DIÁRIO GLOBAL (Net PnL + Floating) ───────────────────
         # Checado ANTES do limite por bot para bloquear tudo se o capital cair 15%
@@ -454,7 +482,19 @@ class ArenaRiskManager:
         if not pos.trailing_enabled or pos.sl_price is None:
             return
 
+        # --- MÓDULO 4.3: Trailing Stop Trigger (Somente após +3% lucro líquido) ---
         side = pos.direction.lower()
+        if side == "yes":
+            pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+        else:
+            entry_yes = 1.0 - pos.entry_price
+            pnl_pct = (entry_yes - current_price) / entry_yes
+            
+        activation_thresh = getattr(config, "TRAILING_ACTIVATION_PCT", 0.03)
+        if pnl_pct < activation_thresh and not pos.tp_triggered:
+            # Ainda não atingiu o lucro mínimo para começar o trailing
+            return
+
         dist = getattr(pos, "trailing_distance", 0.025)
 
         if pos.tp_triggered:
