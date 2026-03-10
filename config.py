@@ -278,7 +278,7 @@ MARKET_FILTER = {
     "max_spread_percent": _env_float(
         "BOT_ARENA_MAX_SPREAD_PERCENT", 6.0
     ),  # v3: 6.0% (Rejeita > 6%)
-    "institutional_volume_threshold": _env_float("BOT_ARENA_INSTITUTIONAL_VOLUME_THRESHOLD", 30000.0),
+    "institutional_volume_threshold": _env_float("BOT_ARENA_INSTITUTIONAL_VOLUME_THRESHOLD", 15000.0),
     "max_spread_pct_microstructure": _env_float("BOT_ARENA_MAX_SPREAD_PCT_MICROSTRUCTURE", 4.0), # 4% as requested
 }
 
@@ -463,7 +463,7 @@ def get_max_spread_allowed() -> float:
 
 
 def get_institutional_volume_threshold() -> float:
-    """Return institutional volume threshold (e.g. 30000.0)."""
+    """Return institutional volume threshold (e.g. 15000.0)."""
     return MARKET_FILTER.get("institutional_volume_threshold", 100000.0)
 
 
