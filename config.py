@@ -210,7 +210,7 @@ MIN_TRADE_AMOUNT = _env_float(
 )  # Minimum trade amount
 
 # --- PHASE 2: Quantitative Institutional Architecture ---
-MIN_Z_SCORE = 2.0
+MIN_Z_SCORE = 1.5
 FRACTIONAL_KELLY = 0.25  # Quarter Kelly sizing
 MAX_MDD_PCT = 0.08       # 8% Lockdown
 TRAILING_ACTIVATION_PCT = 0.015  # Activate trailing after 1.5% profit (Sniper Mode)
@@ -249,7 +249,7 @@ AGGRESSION_THRESHOLDS = {
     },
     "medium": {
         "min_edge_after_fees": 0.0035,  # 0.35%
-        "min_confidence": 0.60,
+        "min_confidence": 0.40,
         "max_spread_allowed": 1.4,  # percent
         "max_trades_per_hour": _env_int("BOT_ARENA_MAX_TRADES_PER_HOUR_PER_BOT", 20),
     },
@@ -278,7 +278,7 @@ MARKET_FILTER = {
     "max_spread_percent": _env_float(
         "BOT_ARENA_MAX_SPREAD_PERCENT", 6.0
     ),  # v3: 6.0% (Rejeita > 6%)
-    "institutional_volume_threshold": _env_float("BOT_ARENA_INSTITUTIONAL_VOLUME_THRESHOLD", 100000.0),
+    "institutional_volume_threshold": _env_float("BOT_ARENA_INSTITUTIONAL_VOLUME_THRESHOLD", 30000.0),
     "max_spread_pct_microstructure": _env_float("BOT_ARENA_MAX_SPREAD_PCT_MICROSTRUCTURE", 4.0), # 4% as requested
 }
 
@@ -463,7 +463,7 @@ def get_max_spread_allowed() -> float:
 
 
 def get_institutional_volume_threshold() -> float:
-    """Return institutional volume threshold (e.g. 100000.0)."""
+    """Return institutional volume threshold (e.g. 30000.0)."""
     return MARKET_FILTER.get("institutional_volume_threshold", 100000.0)
 
 

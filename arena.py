@@ -808,9 +808,8 @@ def _parse_question_end_time_utc(question: str):
 
 def is_5min_market_obj(market: dict) -> bool:
     q = (market.get("question") or "").lower()
-    has_btc = ("btc" in q) or ("bitcoin" in q)
-    has_5min = any(kw in q for kw in config.TARGET_MARKET_KEYWORDS)
-    if not (has_btc and has_5min):
+    has_price_target = any(kw in q for kw in config.TARGET_MARKET_KEYWORDS)
+    if not has_price_target:
         return False
 
     dt = _parse_resolves_at(market.get("resolves_at"))

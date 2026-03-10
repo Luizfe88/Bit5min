@@ -327,18 +327,14 @@ class BaseBot(ABC):
         confidence = abs(p_yes - market_price) * 2.5
         
         # --- MÓDULO Hybrid Confidence (Z-Score Weight) ---
-        # "Se Z_Score > 3.0, aplique um multiplicador de bônus à confiança da IA."
+        # "Se Z_Score > 1.5, aplique um multiplicador de bônus à confiança da IA."
         # Refinement: Penalty based on Brier Score (historical error).
-        if z_score > 3.0:
-            # Factor 1.0 if Brier <= 0.20, 0.0 if Brier >= 0.40 (Linear penalty)
-            brier_penalty_factor = max(0.0, min(1.0, (0.40 - brier_score) / 0.20))
-            bonus_raw = math.log(z_score) * 0.15
-            bonus = bonus_raw * brier_penalty_factor
+        if z_score > 1.5:
+            bonus = math.log(z_score) * 0.18
             
             confidence += bonus
             logger.info(
-                f"[{self.name}] [SNIPER BONUS] Z={z_score:.2f}, BS={brier_score:.4f}, "
-                f"Factor={brier_penalty_factor:.2f} -> Bonus +{bonus:.2f}"
+                f"[{self.name}] [SNIPER BONUS] Z={z_score:.2f} -> Bonus +{bonus:.2f}"
             )
 
         confidence = min(0.98, confidence) # Capped at 0.98 for Sniper mode
@@ -516,7 +512,7 @@ class BaseBot(ABC):
         min_conf = (
             config.get_min_confidence()
             if hasattr(config, "get_min_confidence")
-            else 0.55
+            else 0.40
         )
         if conf < float(min_conf):
             logger.info(
