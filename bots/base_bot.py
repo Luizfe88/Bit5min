@@ -324,7 +324,25 @@ class BaseBot(ABC):
                 "features": {"p_yes": p_yes, "hedge_pi": hedge_pi},
             }
 
-        confidence = min(0.95, abs(p_yes - market_price) * 2.5)
+        confidence = abs(p_yes - market_price) * 2.5
+        
+        # --- MÓDULO Hybrid Confidence (Z-Score Weight) ---
+        # "Se Z_Score > 3.0, aplique um multiplicador de bônus à confiança da IA."
+        # Refinement: Penalty based on Brier Score (historical error).
+        if z_score > 3.0:
+            # Factor 1.0 if Brier <= 0.20, 0.0 if Brier >= 0.40 (Linear penalty)
+            brier_penalty_factor = max(0.0, min(1.0, (0.40 - brier_score) / 0.20))
+            bonus_raw = math.log(z_score) * 0.15
+            bonus = bonus_raw * brier_penalty_factor
+            
+            confidence += bonus
+            logger.info(
+                f"[{self.name}] [SNIPER BONUS] Z={z_score:.2f}, BS={brier_score:.4f}, "
+                f"Factor={brier_penalty_factor:.2f} -> Bonus +{bonus:.2f}"
+            )
+
+        confidence = min(0.98, confidence) # Capped at 0.98 for Sniper mode
+
         reasoning = (
             f"p_yes={p_yes:.3f} mkt={market_price:.3f} "
             f"ev={expected_return:.2%} z={z_score:.2f} "
@@ -546,8 +564,8 @@ class BaseBot(ABC):
             )
             return {"success": False, "reason": "market_locked"}
 
-        # --- EXPIRY GUARD: skip markets closing within 20 minutes ---
-        _MIN_TTE_SECONDS = 20 * 60  # 20 minutes
+        # --- EXPIRY GUARD: skip markets closing within 25 minutes ---
+        _MIN_TTE_SECONDS = 25 * 60  # 25 minutes (Sniper Mode Adjustment)
         try:
             _tte_seconds = None
             _resolves_at = market.get("resolves_at")

@@ -11,8 +11,11 @@ DEFAULT_PARAMS = {
     "volume_weight": 0.3,
     # Trailing TP Configuration
     "trailing_enabled": True,
-    "trailing_distance": 0.045,
-    "trailing_step": 0.015,
+    "trailing_distance": 0.02, # Sniper mode request
+    "trailing_step": 0.01,
+    "rsi_period": 7,            # Fast Response
+    "ema_short": 8,             # Fast
+    "ema_long": 21,             # Medium
 }
 
 

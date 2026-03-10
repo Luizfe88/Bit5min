@@ -213,7 +213,7 @@ MIN_TRADE_AMOUNT = _env_float(
 MIN_Z_SCORE = 2.0
 FRACTIONAL_KELLY = 0.25  # Quarter Kelly sizing
 MAX_MDD_PCT = 0.08       # 8% Lockdown
-TRAILING_ACTIVATION_PCT = 0.03  # Activate trailing after 3% profit
+TRAILING_ACTIVATION_PCT = 0.015  # Activate trailing after 1.5% profit (Sniper Mode)
 MAKER_ORDER_PRIORITY = True
 # ---------------------------------------------------------
 
@@ -255,7 +255,7 @@ AGGRESSION_THRESHOLDS = {
     },
     "aggressive": {
         "min_edge_after_fees": -0.0300,  # ACEITA EV NEGATIVO (-3%) PARA COLETAR DADOS (COLD START)
-        "min_confidence": 0.48,  # MODO AGGRESSIVE: conforme pedido do usuário (aceita perdas por lucros maiores)
+        "min_confidence": 0.40,  # Reduzido para 0.40 conforme pedido
         "max_spread_allowed": 1.5,  # percent
         # Hard cap in aggressive mode: prevent flood
         "max_trades_per_hour": 12,
@@ -265,13 +265,13 @@ AGGRESSION_THRESHOLDS = {
 # Market timing window - SWEET SPOT: 1 hour to 3 days
 # Prioritize markets with enough time for RSI to play out, but not too long
 MARKET_FILTER = {
-    "min_window_seconds": _env_int("BOT_ARENA_MIN_WINDOW_SECONDS", 3600),  # 1 hour
+    "min_window_seconds": _env_int("BOT_ARENA_MIN_WINDOW_SECONDS", 1500),  # 25 min (Sniper Mode)
     "max_window_seconds": _env_int("BOT_ARENA_MAX_WINDOW_SECONDS", 259200),  # 3 days
-    "preferred_window": "1h-3d",
+    "preferred_window": "30m-3d",
     "allow_fallback": True,
     "fallback_min_seconds": _env_int(
-        "BOT_ARENA_FALLBACK_MIN_SECONDS", 1800
-    ),  # 30 min fallback
+        "BOT_ARENA_FALLBACK_MIN_SECONDS", 1500
+    ),  # 25 min fallback
     "min_liquidity_usd": _env_float(
         "BOT_ARENA_MIN_LIQUIDITY_USD", 8000.0
     ),  # Strict 8000.0 limit
@@ -313,32 +313,32 @@ ENABLE_SL_TP_PER_BOT = {
 # Risk Config for Specific Bots (UpDown v3)
 RISK_CONFIG = {
     "updown_bot": {
-        # Configuração para mercados <= 1 dia (24h)
+        # Configuração para mercados <= 1 dia (24h) - Sniper Mode Optimizado
         "1d": {
-            "sl_percent": -48.0,  # Com buffer de spread ~8%
-            "tp_partial": 65.0,  # Vende 50%
-            "tp_full": 88.0,  # Vende 100%
-            "trailing_start": 70.0,  # Começa a trail após +70%
-            "trailing_dist": 12.0,  # Distância de 12%
-            "monitor_interval": 300,  # 5 min
+            "sl_percent": -15.0,  # Stop Loss mais curto para Sniper
+            "tp_partial": 1.5,   # TP parcial no gatilho do Trailing
+            "tp_full": 5.0,     # TP full conservador
+            "trailing_start": 1.5,  # Começa a trail após +1.5%
+            "trailing_dist": 2.0,   # Distância de 2%
+            "monitor_interval": 60,  # 1 min (Mais rápido)
         },
         # Configuração para mercados <= 3 dias (72h)
         "3d": {
-            "sl_percent": -52.0,
-            "tp_partial": 58.0,
-            "tp_full": 82.0,
-            "trailing_start": 65.0,
-            "trailing_dist": 12.0,
-            "monitor_interval": 900,  # 15 min
+            "sl_percent": -20.0,
+            "tp_partial": 2.5,
+            "tp_full": 10.0,
+            "trailing_start": 1.5,
+            "trailing_dist": 2.0,
+            "monitor_interval": 120,  # 2 min
         },
         # Configuração Conservadora (> 3 dias)
         "conservative": {
-            "sl_percent": -60.0,
-            "tp_partial": 50.0,
-            "tp_full": 75.0,
-            "trailing_start": 60.0,
-            "trailing_dist": 15.0,
-            "monitor_interval": 1800,  # 30 min
+            "sl_percent": -30.0,
+            "tp_partial": 5.0,
+            "tp_full": 15.0,
+            "trailing_start": 3.0,
+            "trailing_dist": 3.0,
+            "monitor_interval": 300,  # 5 min
         },
     }
 }

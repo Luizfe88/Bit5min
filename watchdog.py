@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 
 HEARTBEAT_FILE = ".heartbeat"
-HEARTBEAT_TIMEOUT = 300  # 5 minutes
+HEARTBEAT_TIMEOUT = 600  # 10 minutes
 RESTART_DELAY = 10
 ARENA_SCRIPT = "arena.py"
 

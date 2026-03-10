@@ -18,19 +18,19 @@ import config
 logger = logging.getLogger(__name__)
 
 DEFAULT_PARAMS = {
-    "rsi_period": 14,
+    "rsi_period": 7,
     "rsi_overbought_entry": 65,  # v3: Entrada agressiva Down
     "rsi_oversold_entry": 35,  # v3: Entrada agressiva Up
     "rsi_overbought_sl": 75,  # v3: SL se piorar Down
     "rsi_oversold_sl": 25,  # v3: SL se piorar Up
-    "ema_short": 20,
-    "ema_long": 50,
+    "ema_short": 8,
+    "ema_long": 21,
     "position_size_pct": 0.01,  # 1% por trade
     "min_confidence": 0.65,
     # Trailing TP Configuration
     "trailing_enabled": True,
-    "trailing_distance": 0.045,
-    "trailing_step": 0.015,
+    "trailing_distance": 0.02, # Sniper mode request
+    "trailing_step": 0.01,
 }
 
 
@@ -330,11 +330,11 @@ class UpDownBot(BaseBot):
 
         p = params.copy()
         if random.random() < 0.5:
-            p["rsi_period"] = random.choice([7, 14, 21])
+            p["rsi_period"] = random.choice([3, 7, 10]) # Lower periods for fast response
         if random.random() < 0.5:
-            p["ema_short"] = random.randint(10, 30)
+            p["ema_short"] = random.randint(5, 12) # Fast EMA
         if random.random() < 0.5:
-            p["ema_long"] = random.randint(40, 100)
+            p["ema_long"] = random.randint(15, 30) # Medium EMA
         if random.random() < 0.5:
             p["rsi_overbought"] = random.randint(65, 80)
             p["rsi_oversold"] = random.randint(20, 35)

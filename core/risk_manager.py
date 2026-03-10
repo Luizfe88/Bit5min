@@ -619,7 +619,7 @@ class ArenaRiskManager:
                     # ── GATILHO TP -> TRAILING (YES) ──────────────────────────────
                     pos.tp_triggered = True
                     pos.trailing_enabled = True
-                    pos.trailing_distance = 0.025
+                    pos.trailing_distance = 0.02
 
                     # LOCK-IN IMEDIATO (Catraca): garante 80% do lucro acumulado.
                     # Nunca deixa o SL voltar abaixo do entry_price.

@@ -226,6 +226,7 @@ def _validate_bot(bot):
 def run_evolution(bots, cycle_number):
     """Run evolution cycle — select survivors, mutate replacements with sample-size guard."""
     logger.info(f"=== Evolution Cycle {cycle_number} ===")
+    update_heartbeat()
 
     # Passa bots ativos para o evolution manager
     evolution_integration.set_active_bots(bots)
@@ -561,7 +562,7 @@ def discover_markets(api_key):
     import requests
     from datetime import datetime, timezone
 
-    _MIN_EXPIRY_SECONDS = 20 * 60  # 20-minute hard floor
+    _MIN_EXPIRY_SECONDS = 25 * 60  # 25-minute hard floor (Sniper Mode)
 
     # Asset tag definitions: (tag_label, list_of_matching_terms_in_question)
     ASSET_TAGS = [
@@ -1184,6 +1185,15 @@ class PositionMonitorThread(threading.Thread):
             return {}
 
 
+def update_heartbeat():
+    """Updates the watchdog heartbeat file."""
+    try:
+        with open(".heartbeat", "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+
+
 def main_loop(bots, api_key):
     """Main trading loop — each bot trades independently on its own Simmer account."""
     price_feed = get_price_feed()
@@ -1334,11 +1344,7 @@ def main_loop(bots, api_key):
     while True:
         try:
             # === Watchdog Heartbeat ===
-            try:
-                with open(".heartbeat", "w") as f:
-                    f.write(str(time.time()))
-            except Exception:
-                pass
+            update_heartbeat()
 
             # === Log Periódico de Status (15min) ===
             if time.time() - last_status_log > STATUS_LOG_INTERVAL:
@@ -1418,12 +1424,13 @@ def main_loop(bots, api_key):
                     f"Waiting for enough data... only {total_resolved}/{config.EVOLUTION_MIN_RESOLVED_TRADES} trades resolved"
                 )
 
-            # Resolve completed trades (check all accounts)
             if multi_account:
                 for slot_key in set(bot_keys.values()):
                     resolve_trades(slot_key)
+                    update_heartbeat()
             else:
                 resolve_trades(api_key)
+                update_heartbeat()
 
             # === Wallet Sync: periodically fetch Simmer balances and update RiskManager ===
             try:
@@ -1477,7 +1484,9 @@ def main_loop(bots, api_key):
             evolution_integration.check_and_trigger_evolution_if_needed()
 
             # Discover active markets (any key works for read-only)
+            update_heartbeat()
             markets = discover_markets(api_key)
+            update_heartbeat()
             if not markets:
                 logger.debug("No active 5-min markets found, waiting...")
                 # Position monitor thread handles SL/TP independently
@@ -1559,10 +1568,12 @@ def main_loop(bots, api_key):
             all_sent_signals = {}
 
             for crypto in crypto_types:
+                update_heartbeat()
                 price_signals = price_feed.get_signals(crypto)
                 sent_signals = sentiment_feed.get_signals(crypto)
                 all_price_signals[crypto] = price_signals
                 all_sent_signals[crypto] = sent_signals
+                update_heartbeat()
 
             # compute regime (Hurst exponent) once per crypto type and treat as a
             # "market climate" that is passed to every bot
@@ -1677,6 +1688,7 @@ def main_loop(bots, api_key):
                         f"No trades placed this cycle (decisions={decide_count}, skips={skip_count})"
                     )
 
+            update_heartbeat()
             time.sleep(TRADE_INTERVAL)
 
         except KeyboardInterrupt:
