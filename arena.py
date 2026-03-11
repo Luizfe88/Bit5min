@@ -647,14 +647,15 @@ def discover_markets(api_key):
                 except Exception:
                     pass
 
-            # ── 5. Liquidity filter ───────────────────────────────────────────────
-            liq_field = m.get("liquidity")
-            if liq_field is not None:
-                try:
-                    if float(liq_field) < config.MARKET_FILTER.get("min_liquidity_usd", 0):
-                        continue
-                except Exception:
-                    pass
+            # ── 5. Liquidity/Volume filter ────────────────────────────────────────
+            try:
+                m_liquidity = float(m.get("liquidity") or m.get("volume") or m.get("volume_24h") or 0.0)
+                threshold = config.MARKET_FILTER.get("min_liquidity_usd", 15000.0)
+                if m_liquidity < threshold:
+                    logger.debug(f"Skipping market {m.get('id')} due to low liquidity: ${m_liquidity:,.0f} < ${threshold:,.0f}")
+                    continue
+            except Exception as liq_err:
+                logger.debug(f"Discovery liquidity filter error (non-blocking): {liq_err}")
 
             # ── 6. Spread filter ──────────────────────────────────────────────────
             try:

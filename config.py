@@ -262,19 +262,19 @@ AGGRESSION_THRESHOLDS = {
     },
 }
 
-# Market timing window - SWEET SPOT: 1 hour to 3 days
+# Market timing window - SWEET SPOT: 1 hour to 12 hours
 # Prioritize markets with enough time for RSI to play out, but not too long
 MARKET_FILTER = {
     "min_window_seconds": _env_int("BOT_ARENA_MIN_WINDOW_SECONDS", 1500),  # 25 min (Sniper Mode)
-    "max_window_seconds": _env_int("BOT_ARENA_MAX_WINDOW_SECONDS", 259200),  # 3 days
-    "preferred_window": "30m-3d",
+    "max_window_seconds": _env_int("BOT_ARENA_MAX_WINDOW_SECONDS", 90000),  # 25 hours
+    "preferred_window": "30m-25h",
     "allow_fallback": True,
     "fallback_min_seconds": _env_int(
         "BOT_ARENA_FALLBACK_MIN_SECONDS", 1500
     ),  # 25 min fallback
     "min_liquidity_usd": _env_float(
-        "BOT_ARENA_MIN_LIQUIDITY_USD", 8000.0
-    ),  # Strict 8000.0 limit
+        "BOT_ARENA_MIN_LIQUIDITY_USD", 15000.0
+    ),  # Sync with institutional_volume_threshold
     "max_spread_percent": _env_float(
         "BOT_ARENA_MAX_SPREAD_PERCENT", 6.0
     ),  # v3: 6.0% (Rejeita > 6%)

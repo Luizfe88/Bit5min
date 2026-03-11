@@ -527,7 +527,7 @@ class BaseBot(ABC):
             vol_threshold = config.get_institutional_volume_threshold()
             if m_liquidity < vol_threshold:
                 logger.info(
-                    f"[{self.name}] [SKIP] Mercado rejeitado por baixa liquidez (Volume < ${vol_threshold/1000:.0f}k)."
+                    f"[{self.name}] [SKIP] Mercado rejeitado por baixa liquidez. Atual: ${m_liquidity:,.0f} < Threshold: ${vol_threshold:,.0f}."
                 )
                 return {"success": False, "reason": "low_liquidity_institutional"}
         except Exception as liq_err:
